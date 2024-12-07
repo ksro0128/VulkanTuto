@@ -26,6 +26,7 @@ target_include_directories(VulkanApp PRIVATE
     ${Vulkan_INCLUDE_DIR}
     external/glfw/include
     external/glm
+    external/stb
 )
 
 # 라이브러리 연결
