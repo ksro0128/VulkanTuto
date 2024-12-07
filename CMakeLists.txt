@@ -19,17 +19,13 @@ add_subdirectory(external/glfw)
 add_subdirectory(external/glm)
 
 # 실행 파일 생성
-add_executable(VulkanApp 
-src/main.cpp
-external/stb/stb_image.h
-)
+add_executable(VulkanApp src/main.cpp)
 
 # include 디렉토리 추가
 target_include_directories(VulkanApp PRIVATE
     ${Vulkan_INCLUDE_DIR}
     external/glfw/include
     external/glm
-    external/stb
 )
 
 # 라이브러리 연결
