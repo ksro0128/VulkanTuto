@@ -1,33 +1,33 @@
-# 최소 CMake 버전 설정
-cmake_minimum_required(VERSION 3.15)
-project(VulkanTuto)
+cmake_minimum_required(VERSION 3.13)
 
-# C++17 표준 설정
+set(PROJECT_NAME VULKAN_TUTORIAL)
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+set(WINDOW_NAME "VULKAN_TUTORIAL")
+set(WINDOW_WIDTH 1920)
+set(WINDOW_HEIGHT 1080)
 
-# Vulkan SDK 설정
+project(${PROJECT_NAME})
+set(SRC src/main.cpp)
+
+add_executable(${PROJECT_NAME} ${SRC})
+
+include(Dependency.cmake)
+
+# 우리 프로젝트에 include / lib 관련 옵션 추가
+
+set(CMAKE_PREFIX_PATH "C:/VulkanSDK/1.3.296.0")
 find_package(Vulkan REQUIRED)
+target_link_libraries(${PROJECT_NAME} PUBLIC Vulkan::Vulkan)
 
-# GLFW 설정
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "GLFW lib only")
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "GLFW lib only")
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "GLFW lib only")
-add_subdirectory(external/glfw)
+target_include_directories(${PROJECT_NAME} PUBLIC ${DEP_INCLUDE_DIR})
+target_link_directories(${PROJECT_NAME} PUBLIC ${DEP_LIB_DIR})
+target_link_libraries(${PROJECT_NAME} PUBLIC ${DEP_LIBS})
 
-# GLM 설정
-add_subdirectory(external/glm)
+target_compile_definitions(${PROJECT_NAME} PUBLIC
+WINDOW_NAME="${WINDOW_NAME}"
+WINDOW_WIDTH=${WINDOW_WIDTH}
+WINDOW_HEIGHT=${WINDOW_HEIGHT})
 
-# 실행 파일 생성
-add_executable(VulkanApp src/main.cpp)
-
-# include 디렉토리 추가
-target_include_directories(VulkanApp PRIVATE
-    ${Vulkan_INCLUDE_DIR}
-    external/glfw/include
-    external/glm
-    external/stb
-)
-
-# 라이브러리 연결
-target_link_libraries(VulkanApp PRIVATE Vulkan::Vulkan glfw glm)
+# Dependency들이 먼저 build 될 수 있게 관계 설정 / 뒤에서 부터 컴파일
+add_dependencies(${PROJECT_NAME} ${DEP_LIST})

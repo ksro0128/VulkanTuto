@@ -1,2 +1,5 @@
+.vscode
 build/
-external/
+VULKAN_TUTORIAL_debug.exe
+VULKAN_TUTORIAL_release.exe
+memo
