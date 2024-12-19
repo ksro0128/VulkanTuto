@@ -624,6 +624,105 @@ private:
 };
 
 
+class VulkanUtil {
+public:
+	static void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
+		
+		auto& context = VulkanContext::getContext();
+		auto device = context.getDevice();
+
+		// 이미지 객체를 만드는데 사용되는 구조체
+		VkImageCreateInfo imageInfo{};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;					// 이미지의 차원을 설정
+		imageInfo.extent.width = width;							// 이미지의 너비 지정
+		imageInfo.extent.height = height;						// 이미지의 높이 지정 
+		imageInfo.extent.depth = 1;								// 이미지의 깊이 지정 (2D 이미지의 경우 depth는 1로 지정해야 함)
+		imageInfo.mipLevels = mipLevels;						// 생성할 mipLevel의 개수 지정
+		imageInfo.arrayLayers = 1;								// 생성할 이미지 레이어 수 (큐브맵의 경우 6개 생성)
+		imageInfo.format = format;								// 이미지의 포맷을 지정하며, 채널 구성과 각 채널의 비트 수를 정의
+		imageInfo.tiling = tiling;								// 이미지를 GPU 메모리에 배치할 때 메모리 레이아웃을 결정하는 설정 (CPU에서도 접근 가능하게 할꺼냐, GPU에만 접근 가능하게 최적화 할거냐 결정) 
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;	// 이미지 초기 레이아웃 설정 (이미지가 메모리에 배치될 때 초기 상태를 정의)
+		imageInfo.usage = usage;								// 이미지의 사용 용도 결정
+		imageInfo.samples = numSamples;							// 멀티 샘플링을 위한 샘플 개수
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;		// 이미지의 큐 공유 모드 설정 (VK_SHARING_MODE_EXCLUSIVE: 한 번에 하나의 큐 패밀리에서만 접근 가능한 단일 큐 모드)
+
+		// 이미지 객체 생성
+		if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create image!");
+		}
+
+		// 이미지에 필요한 메모리 요구 사항을 조회 
+		VkMemoryRequirements memRequirements;
+		vkGetImageMemoryRequirements(device, image, &memRequirements);
+
+		// 메모리 할당을 위한 구조체
+		VkMemoryAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;											// 메모리 크기 설정
+		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);		// 메모리 유형과 속성 설정
+
+		// 이미지를 위한 메모리 할당
+		if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate image memory!");
+		}
+
+		// 이미지에 할당한 메모리 바인딩
+		vkBindImageMemory(device, image, imageMemory, 0);
+	}
+
+	/*
+		GPU와 buffer가 호환되는 메모리 유형중 properties에 해당하는 속성들을 갖는 메모리 유형 찾기
+	*/
+	static uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+		auto& context = VulkanContext::getContext();
+		auto physicalDevice = context.getPhysicalDevice();
+		
+		// GPU에서 사용한 메모리 유형을 가져온다.
+		VkPhysicalDeviceMemoryProperties memProperties;
+		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+			// typeFilter & (1 << i) : GPU의 메모리 유형중 버퍼와 호환되는 것인지 판단
+			// memProperties.memoryTypes[i].propertyFlags & properties : GPU 메모리 유형의 속성이 properties와 일치하는지 판단
+			if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+				// 해당 메모리 유형 반환
+				return i;
+			}
+		}
+
+		throw std::runtime_error("failed to find suitable memory type!");
+	}
+
+	// 이미지 뷰 생성
+	static VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels) {
+		auto& context = VulkanContext::getContext();
+		auto device = context.getDevice();
+		
+		// 이미지 뷰 정보 생성
+		VkImageViewCreateInfo viewInfo{};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = image;													// 이미지 핸들
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;								// 이미지 타입
+		viewInfo.format = format;												// 이미지 포맷
+		viewInfo.subresourceRange.aspectMask = aspectFlags;  					// 이미지 형식 결정 (color / depth / stencil 등)
+		viewInfo.subresourceRange.baseMipLevel = 0;                          	// 렌더링할 mipmap 단계 설정
+		viewInfo.subresourceRange.levelCount = mipLevels;                       // baseMipLevel 기준으로 몇 개의 MipLevel을 더 사용할지 설정 (실제 mipmap 만드는 건 따로 해줘야함)
+		viewInfo.subresourceRange.baseArrayLayer = 0;                        	// ImageView가 참조하는 이미지 레이어의 시작 위치 정의
+		viewInfo.subresourceRange.layerCount = 1;                            	// 스왑 체인에서 설정한 이미지 레이어 개수
+
+		// 이미지 뷰 생성
+		VkImageView imageView;
+		if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create image view!");
+		}
+
+		return imageView;
+	}
+
+};
+
+
 class Buffer {
 public:
 	virtual ~Buffer() {
@@ -664,7 +763,7 @@ protected:
 		// 메모리 요구사항 설정 (GPU 메모리 유형 중 buffer와 호환되고 properties 속성들과 일치하는 것 찾아 저장)
 		// 메모리 유형 - GPU 메모리는 구역마다 유형이 다르다. (memoryTypeBits는 buffer가 호환되는 GPU의 메모리 유형이 전부 담겨있음)
 		// 메모리 유형의 속성 - 메모리 유형마다 특성을 가지고 있음
-		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+		allocInfo.memoryTypeIndex = VulkanUtil::findMemoryType(memRequirements.memoryTypeBits, properties);
 
 		// 버퍼 메모리 할당
 		if (vkAllocateMemory(m_device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
@@ -728,26 +827,6 @@ protected:
 
 		vkFreeCommandBuffers(m_device, m_commandPool, 1, &commandBuffer);	// 커맨드 버퍼 제거
 	}	
-
-	/*
-		GPU와 buffer가 호환되는 메모리 유형중 properties에 해당하는 속성들을 갖는 메모리 유형 찾기
-	*/
-	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
-		// GPU에서 사용한 메모리 유형을 가져온다.
-		VkPhysicalDeviceMemoryProperties memProperties;
-		vkGetPhysicalDeviceMemoryProperties(m_physicalDevice, &memProperties);
-
-		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-			// typeFilter & (1 << i) : GPU의 메모리 유형중 버퍼와 호환되는 것인지 판단
-			// memProperties.memoryTypes[i].propertyFlags & properties : GPU 메모리 유형의 속성이 properties와 일치하는지 판단
-			if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-				// 해당 메모리 유형 반환
-				return i;
-			}
-		}
-
-		throw std::runtime_error("failed to find suitable memory type!");
-	}
 };
 
 class VertexBuffer : public Buffer {
@@ -905,7 +984,7 @@ private:
 		vkUnmapMemory(m_device, stagingBufferMemory);
 
 		stbi_image_free(pixels);
-		createImage(texWidth, texHeight, mipLevels, 
+		VulkanUtil::createImage(texWidth, texHeight, mipLevels, 
 		VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
 		VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
@@ -917,47 +996,6 @@ private:
 		vkFreeMemory(m_device, stagingBufferMemory, nullptr);
 
 		generateMipmaps(textureImage, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, mipLevels);
-	}
-
-	void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
-		// 이미지 객체를 만드는데 사용되는 구조체
-		VkImageCreateInfo imageInfo{};
-		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		imageInfo.imageType = VK_IMAGE_TYPE_2D;					// 이미지의 차원을 설정
-		imageInfo.extent.width = width;							// 이미지의 너비 지정
-		imageInfo.extent.height = height;						// 이미지의 높이 지정 
-		imageInfo.extent.depth = 1;								// 이미지의 깊이 지정 (2D 이미지의 경우 depth는 1로 지정해야 함)
-		imageInfo.mipLevels = mipLevels;						// 생성할 mipLevel의 개수 지정
-		imageInfo.arrayLayers = 1;								// 생성할 이미지 레이어 수 (큐브맵의 경우 6개 생성)
-		imageInfo.format = format;								// 이미지의 포맷을 지정하며, 채널 구성과 각 채널의 비트 수를 정의
-		imageInfo.tiling = tiling;								// 이미지를 GPU 메모리에 배치할 때 메모리 레이아웃을 결정하는 설정 (CPU에서도 접근 가능하게 할꺼냐, GPU에만 접근 가능하게 최적화 할거냐 결정) 
-		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;	// 이미지 초기 레이아웃 설정 (이미지가 메모리에 배치될 때 초기 상태를 정의)
-		imageInfo.usage = usage;								// 이미지의 사용 용도 결정
-		imageInfo.samples = numSamples;							// 멀티 샘플링을 위한 샘플 개수
-		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;		// 이미지의 큐 공유 모드 설정 (VK_SHARING_MODE_EXCLUSIVE: 한 번에 하나의 큐 패밀리에서만 접근 가능한 단일 큐 모드)
-
-		// 이미지 객체 생성
-		if (vkCreateImage(m_device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create image!");
-		}
-
-		// 이미지에 필요한 메모리 요구 사항을 조회 
-		VkMemoryRequirements memRequirements;
-		vkGetImageMemoryRequirements(m_device, image, &memRequirements);
-
-		// 메모리 할당을 위한 구조체
-		VkMemoryAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memRequirements.size;											// 메모리 크기 설정
-		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);		// 메모리 유형과 속성 설정
-
-		// 이미지를 위한 메모리 할당
-		if (vkAllocateMemory(m_device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate image memory!");
-		}
-
-		// 이미지에 할당한 메모리 바인딩
-		vkBindImageMemory(m_device, image, imageMemory, 0);
 	}
 
 
@@ -1180,18 +1218,13 @@ private:
 
 class Mesh {
 public:
-	static std::shared_ptr<Mesh> createMesh(
-		VkDevice device, VkPhysicalDevice physicalDevice,
-		VkCommandPool commandPool, VkQueue graphicsQueue, 
-		std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+	static std::shared_ptr<Mesh> createMesh(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
 			std::shared_ptr<Mesh> mesh = std::shared_ptr<Mesh>(new Mesh());
-			mesh->initMesh(device, physicalDevice, commandPool, graphicsQueue, vertices, indices);
+			mesh->initMesh(vertices, indices);
 			return mesh;
 	}
 
-	static std::shared_ptr<Mesh> createBox(
-		VkDevice device, VkPhysicalDevice physicalDevice,
-		VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::shared_ptr<Mesh> createBox() {
 		std::vector<Vertex> vertices = {
 			Vertex { glm::vec3(-0.5f, -0.5f, -0.5f), glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec2(0.0f, 0.0f) },
 			Vertex { glm::vec3( 0.5f, -0.5f, -0.5f), glm::vec3( 0.0f,  0.0f, -1.0f), glm::vec2(1.0f, 0.0f) },
@@ -1233,13 +1266,10 @@ public:
 			20, 22, 21, 22, 20, 23,
 		};
 
-		return createMesh(device, physicalDevice, commandPool, graphicsQueue, vertices, indices);
+		return createMesh(vertices, indices);
 	}
 
-	static std::shared_ptr<Mesh> createSphere(
-		VkDevice device, VkPhysicalDevice physicalDevice,
-		VkCommandPool commandPool, VkQueue graphicsQueue) {
-
+	static std::shared_ptr<Mesh> createSphere() {
 			std::vector<Vertex> vertices;
 			std::vector<uint32_t> indices;
 
@@ -1280,12 +1310,10 @@ public:
 					indices[indexOffset + 5] = vertexOffset + circleVertCount;
 				}
 			}
-		return createMesh(device, physicalDevice, commandPool, graphicsQueue, vertices, indices);
+		return createMesh(vertices, indices);
 	}
 
-	static std::shared_ptr<Mesh> createPlane(
-		VkDevice device, VkPhysicalDevice physicalDevice,
-		VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::shared_ptr<Mesh> createPlane() {
 		std::vector<Vertex> vertices = {
 			Vertex { glm::vec3(-0.5f, -0.5f, 0.0f), glm::vec3( 0.0f,  0.0f, 1.0f), glm::vec2(0.0f, 0.0f) },
 			Vertex { glm::vec3( 0.5f, -0.5f, 0.0f), glm::vec3( 0.0f,  0.0f, 1.0f), glm::vec2(1.0f, 0.0f) },
@@ -1297,7 +1325,7 @@ public:
 			0,  1,  2,  2,  3,  0,
 		};
 
-		return createMesh(device, physicalDevice, commandPool, graphicsQueue, vertices, indices);
+		return createMesh(vertices, indices);
 	}
 
 	~Mesh() {}
@@ -1316,19 +1344,13 @@ private:
 	std::unique_ptr<VertexBuffer> m_vertexBuffer;
 	std::unique_ptr<IndexBuffer> m_indexBuffer;
 
-	// 전역
 	VkDevice m_device;
 	VkPhysicalDevice m_physicalDevice;
 	VkCommandPool m_commandPool;
 	VkQueue m_graphicsQueue;
 
 
-	void initMesh(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue,
-	std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
-
-		// 전역 변수 줄이기
+	void initMesh(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
 		auto& context = VulkanContext::getContext();
 		m_device = context.getDevice();
 		m_physicalDevice = context.getPhysicalDevice();
@@ -1343,35 +1365,27 @@ private:
 
 class Model {
 public:
-	static std::shared_ptr<Model> createModel(std::string path,
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::shared_ptr<Model> createModel(std::string path) {
 		std::shared_ptr<Model> model = std::shared_ptr<Model>(new Model());
-		model->initModel(path, device, physicalDevice, commandPool, graphicsQueue);
+		model->initModel(path);
 		return model;
 	}
 
-	static std::shared_ptr<Model> createBoxModel(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::shared_ptr<Model> createBoxModel() {
 		std::shared_ptr<Model> model = std::shared_ptr<Model>(new Model());
-		model->initBoxModel(device, physicalDevice, commandPool, graphicsQueue);
+		model->initBoxModel();
 		return model;
 	}
 
-	static std::shared_ptr<Model> createSphereModel(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::shared_ptr<Model> createSphereModel() {
 		std::shared_ptr<Model> model = std::shared_ptr<Model>(new Model());
-		model->initSphereModel(device, physicalDevice, commandPool, graphicsQueue);
+		model->initSphereModel();
 		return model;
 	}
 
-	static std::shared_ptr<Model> createPlaneModel(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::shared_ptr<Model> createPlaneModel() {
 		std::shared_ptr<Model> model = std::shared_ptr<Model>(new Model());
-		model->initPlaneModel(device, physicalDevice, commandPool, graphicsQueue);
+		model->initPlaneModel();
 		return model;
 	}
 
@@ -1389,53 +1403,23 @@ public:
 private:
 	Model() {}
 	std::vector< std::shared_ptr<Mesh> > m_meshes;
-	VkDevice m_device;
-	VkPhysicalDevice m_physicalDevice;
-	VkCommandPool m_commandPool;
-	VkQueue m_graphicsQueue;
 
-	void initModel(std::string path, 
-	VkDevice device, VkPhysicalDevice physicalDevice, 
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
-		m_device = device;
-		m_physicalDevice = physicalDevice;
-		m_commandPool = commandPool;
-		m_graphicsQueue = graphicsQueue;
+	void initModel(std::string path) {
 
 		loadModel(path);
 	}
 
-	void initBoxModel(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
-		m_device = device;
-		m_physicalDevice = physicalDevice;
-		m_commandPool = commandPool;
-		m_graphicsQueue = graphicsQueue;
+	void initBoxModel() {
 
-		m_meshes.push_back(Mesh::createBox(device, physicalDevice, commandPool, graphicsQueue));
+		m_meshes.push_back(Mesh::createBox());
 	}
 
-	void initSphereModel(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
-		m_device = device;
-		m_physicalDevice = physicalDevice;
-		m_commandPool = commandPool;
-		m_graphicsQueue = graphicsQueue;
-
-		m_meshes.push_back(Mesh::createSphere(device, physicalDevice, commandPool, graphicsQueue));
+	void initSphereModel() {
+		m_meshes.push_back(Mesh::createSphere());
 	}
 
-	void initPlaneModel(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
-		m_device = device;
-		m_physicalDevice = physicalDevice;
-		m_commandPool = commandPool;
-		m_graphicsQueue = graphicsQueue;
-
-		m_meshes.push_back(Mesh::createPlane(device, physicalDevice, commandPool, graphicsQueue));
+	void initPlaneModel() {
+		m_meshes.push_back(Mesh::createPlane());
 	}
 
 
@@ -1484,7 +1468,7 @@ private:
 			}
 		}
 
-		return Mesh::createMesh(m_device, m_physicalDevice, m_commandPool, m_graphicsQueue, vertices, indices);
+		return Mesh::createMesh(vertices, indices);
 	}
 };
 
@@ -1548,30 +1532,7 @@ private:
 	// 텍스처 이미지 뷰 생성
 	void createTextureImageView() {
 		// SRGB 총 4바이트 포맷으로 된 이미지 뷰 생성
-		textureImageView = createImageView(m_imageBuffer->getImage(), VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, m_imageBuffer->getMipLevels());
-	}
-
-	// 이미지 뷰 생성
-	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels) {
-		// 이미지 뷰 정보 생성
-		VkImageViewCreateInfo viewInfo{};
-		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = image;													// 이미지 핸들
-		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;								// 이미지 타입
-		viewInfo.format = format;												// 이미지 포맷
-		viewInfo.subresourceRange.aspectMask = aspectFlags;  					// 이미지 형식 결정 (color / depth / stencil 등)
-		viewInfo.subresourceRange.baseMipLevel = 0;                          	// 렌더링할 mipmap 단계 설정
-		viewInfo.subresourceRange.levelCount = mipLevels;                       // baseMipLevel 기준으로 몇 개의 MipLevel을 더 사용할지 설정 (실제 mipmap 만드는 건 따로 해줘야함)
-		viewInfo.subresourceRange.baseArrayLayer = 0;                        	// ImageView가 참조하는 이미지 레이어의 시작 위치 정의
-		viewInfo.subresourceRange.layerCount = 1;                            	// 스왑 체인에서 설정한 이미지 레이어 개수
-
-		// 이미지 뷰 생성
-		VkImageView imageView;
-		if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create image view!");
-		}
-
-		return imageView;
+		textureImageView = VulkanUtil::createImageView(m_imageBuffer->getImage(), VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, m_imageBuffer->getMipLevels());
 	}
 
 	// 텍스처를 위한 샘플러 생성 함수
@@ -1653,11 +1614,9 @@ private:
 
 class Scene {
 public:
-	static std::unique_ptr<Scene> createScene(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
+	static std::unique_ptr<Scene> createScene() {
 		std::unique_ptr<Scene> scene = std::unique_ptr<Scene>(new Scene());
-		scene->initScene(device, physicalDevice, commandPool, graphicsQueue);
+		scene->initScene();
 		return scene;
 	}
 	~Scene() {}
@@ -1718,15 +1677,13 @@ private:
     glm::vec3 m_lightPos { 0.0f, 10.0f, 0.0f };
 	size_t m_objectCount;
 
-	void initScene(
-	VkDevice device, VkPhysicalDevice physicalDevice,
-	VkCommandPool commandPool, VkQueue graphicsQueue) {
+	void initScene() {
 
-		m_boxModel = Model::createBoxModel(device, physicalDevice, commandPool, graphicsQueue);
-		m_sphereModel = Model::createSphereModel(device, physicalDevice, commandPool, graphicsQueue);
-		m_planeModel = Model::createPlaneModel(device, physicalDevice, commandPool, graphicsQueue);
+		m_boxModel = Model::createBoxModel();
+		m_sphereModel = Model::createSphereModel();
+		m_planeModel = Model::createPlaneModel();
 
-		m_vikingModel = Model::createModel("models/viking_room.obj", device, physicalDevice, commandPool, graphicsQueue);
+		m_vikingModel = Model::createModel("models/viking_room.obj");
 
 		//texture 해야함
 		m_aTexture = Texture::createTexture("textures/viking_room.png");
@@ -1743,698 +1700,63 @@ private:
 };
 
 
-class Renderer {
+class SwapChain {
 public:
-	static std::unique_ptr<Renderer> createRenderer(GLFWwindow* window) {
-		std::unique_ptr<Renderer> renderer = std::unique_ptr<Renderer>(new Renderer());
-		renderer->init(window);
-		return renderer;
-	}
-	~Renderer() {}
-
-	// 유니폼 버퍼 생성
-	void createUniformBuffers(Scene *scene) {
-		size_t objectCount = scene->getObjectCount();
-		if (objectCount == 0) {
-			throw std::runtime_error("failed to create uniform buffers!");
-		}
-		// 유니폼 버퍼에 저장 될 구조체의 크기
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-
-		// 각 요소들을 동시에 처리 가능한 최대 프레임 수만큼 만들어 둔다.
-		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT * objectCount);		// 유니폼 버퍼 객체
-		uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT * objectCount);	// 유니폼 버퍼에 할당할 메모리
-		uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT * objectCount);	// GPU 메모리에 매핑할 CPU 메모리 포인터
-
-		m_uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT * objectCount);
-
-		for (size_t i = 0; i < objectCount; i++) {
-			for (size_t j = 0; j < MAX_FRAMES_IN_FLIGHT; j++) {
-				m_uniformBuffers[i * MAX_FRAMES_IN_FLIGHT + j] = UniformBuffer::createUniformBuffer(bufferSize);
-			}
-		}
-
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-
-			for (size_t j = 0; j < objectCount; j++) {
-				// 유니폼 버퍼 객체 생성 + 메모리 할당 + 바인딩
-				createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i * objectCount + j], uniformBuffersMemory[i * objectCount + j]);
-				// GPU 메모리 CPU 가상 포인터에 매핑
-				vkMapMemory(device, uniformBuffersMemory[i * objectCount + j], 0, bufferSize, 0, &uniformBuffersMapped[i * objectCount + j]);
-
-			}
-		}
-	}
-
-	// 디스크립터 셋 할당 및 업데이트 하여 리소스 바인딩
-	void createDescriptorSets(Scene* scene) {
-		size_t objectCount = scene->getObjectCount();
-		std::vector<std::shared_ptr<Object>> objects = scene->getObjects();
-
-		if (objectCount == 0) {
-			throw std::runtime_error("failed to create descriptor sets!");
-		}
-		// 디스크립터 셋 레이아웃 벡터 생성 (기존 만들어놨던 디스크립터 셋 레이아웃 객체 이용)
-		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * objectCount, descriptorSetLayout);
-
-		// 디스크립터 셋 할당에 필요한 정보를 설정하는 구조체
-		VkDescriptorSetAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = descriptorPool;										// 디스크립터 셋을 할당할 디스크립터 풀 지정
-		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * objectCount);		// 할당할 디스크립터 셋 개수 지정
-		allocInfo.pSetLayouts = layouts.data();											// 할당할 디스크립터 셋 의 레이아웃을 정의하는 배열 
-
-		descriptorSets.resize(MAX_FRAMES_IN_FLIGHT * objectCount);									// 디스크립터 셋을 저장할 벡터 크기 설정
-		
-		// 디스크립터 풀에 디스크립터 셋 할당
-		if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate descriptor sets!");
-		}
-
-
-		for (size_t i = 0; i < objectCount; i++) {
-			for (size_t j = 0; j < MAX_FRAMES_IN_FLIGHT; j++) {
-				// 디스크립터 셋에 바인딩할 버퍼 정보 
-				VkDescriptorBufferInfo bufferInfo{};
-				bufferInfo.buffer = m_uniformBuffers[i * MAX_FRAMES_IN_FLIGHT + j]->getBuffer();			// 바인딩할 버퍼
-				bufferInfo.offset = 0;												// 버퍼에서 데이터 시작 위치 offset
-				bufferInfo.range = sizeof(UniformBufferObject);						// 셰이더가 접근할 버퍼 크기
-
-				std::shared_ptr<Texture> texture = objects[i]->getTexture();
-				VkDescriptorImageInfo imageInfo{};								
-				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// 이미지의 레이아웃
-				imageInfo.imageView = texture->getImageView();						// 셰이더에서 사용할 이미지 뷰
-				imageInfo.sampler = texture->getSampler();							// 이미지 샘플링에 사용할 샘플러 설정
-				
-				// 디스크립터 셋 바인딩 및 업데이트
-				std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-
-				descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				descriptorWrites[0].dstSet = descriptorSets[i * MAX_FRAMES_IN_FLIGHT + j];					// 업데이트 할 디스크립터 셋
-				descriptorWrites[0].dstBinding = 0;													// 업데이트 할 바인딩 포인트
-				descriptorWrites[0].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
-				descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;				// 업데이트 할 디스크립터 타입
-				descriptorWrites[0].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
-				descriptorWrites[0].pBufferInfo = &bufferInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
-
-				descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				descriptorWrites[1].dstSet = descriptorSets[i * MAX_FRAMES_IN_FLIGHT + j];					// 업데이트 할 디스크립터 셋
-				descriptorWrites[1].dstBinding = 1;													// 업데이트 할 바인딩 포인트
-				descriptorWrites[1].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
-				descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;		// 업데이트 할 디스크립터 타입
-				descriptorWrites[1].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
-				descriptorWrites[1].pImageInfo = &imageInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
-
-				// 디스크립터 셋을 업데이트 하여 사용할 리소스 바인딩
-				vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-			}
-		}
-
-
-
-
-		// // 디스크립터 셋마다 디스크립터 설정 진행
-		// for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-		// 	for (size_t j = 0; j < objectCount; j++) {
-		// 		// 디스크립터 셋에 바인딩할 버퍼 정보 
-		// 		VkDescriptorBufferInfo bufferInfo{};
-		// 		bufferInfo.buffer = uniformBuffers[i * objectCount + j];			// 바인딩할 버퍼
-		// 		bufferInfo.offset = 0;												// 버퍼에서 데이터 시작 위치 offset
-		// 		bufferInfo.range = sizeof(UniformBufferObject);						// 셰이더가 접근할 버퍼 크기
-
-		// 		std::shared_ptr<Texture> texture = objects[j]->getTexture();
-		// 		VkDescriptorImageInfo imageInfo{};								
-		// 		imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// 이미지의 레이아웃
-		// 		imageInfo.imageView = texture->getImageView();						// 셰이더에서 사용할 이미지 뷰
-		// 		imageInfo.sampler = texture->getSampler();							// 이미지 샘플링에 사용할 샘플러 설정
-				
-		// 		// 디스크립터 셋 바인딩 및 업데이트
-		// 		std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-
-		// 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		// 		descriptorWrites[0].dstSet = descriptorSets[i * objectCount + j];					// 업데이트 할 디스크립터 셋
-		// 		descriptorWrites[0].dstBinding = 0;													// 업데이트 할 바인딩 포인트
-		// 		descriptorWrites[0].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
-		// 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;				// 업데이트 할 디스크립터 타입
-		// 		descriptorWrites[0].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
-		// 		descriptorWrites[0].pBufferInfo = &bufferInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
-
-		// 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		// 		descriptorWrites[1].dstSet = descriptorSets[i * objectCount + j];					// 업데이트 할 디스크립터 셋
-		// 		descriptorWrites[1].dstBinding = 1;													// 업데이트 할 바인딩 포인트
-		// 		descriptorWrites[1].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
-		// 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;		// 업데이트 할 디스크립터 타입
-		// 		descriptorWrites[1].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
-		// 		descriptorWrites[1].pImageInfo = &imageInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
-
-		// 		// 디스크립터 셋을 업데이트 하여 사용할 리소스 바인딩
-		// 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-		// 	}
-		// }
-	}
-
-	// getter
-	VkDevice getDevice() {
-		return device;
-	}
-
-	VkPhysicalDevice getPhysicalDevice() {
-		return physicalDevice;
-	}
-
-	VkQueue getGraphicsQueue() {
-		return graphicsQueue;
-	}
-
-	VkCommandPool getCommandPool() {
-		return commandPool;
-	}
-
-	void drawFrame(Scene* scene) {
-		// [이전 GPU 작업 대기]
-		// 동시에 작업 가능한 최대 Frame 개수만큼 작업 중인 경우 대기 (가장 먼저 시작한 Frame 작업이 끝나서 Fence에 signal을 보내기를 기다림)
-		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
- 
-		// [작업할 image 준비]
-		// 이번 Frame 에서 사용할 이미지 준비 및 해당 이미지 index 받아오기 (준비가 끝나면 signal 보낼 세마포어 등록)
-		// vkAcquireNextImageKHR 함수는 CPU에서 swapChain과 surface의 호환성을 확인하고 GPU에 이미지 준비 명령을 내리는 함수
-		// 만약 image가 프레젠테이션 큐에 작업이 진행 중이거나 대기 중이면 해당 image는 사용하지 않고 대기한다.
-		uint32_t imageIndex;
-		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-
-		// image 준비 실패로 인한 오류 처리
-		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-			// 스왑 체인이 surface 크기와 호환되지 않는 경우로(창 크기 변경), 스왑 체인 재생성 후 다시 draw
-			recreateSwapChain();
-			return;
-		} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-			// 진짜 오류 gg
-			throw std::runtime_error("failed to acquire swap chain image!");
-		}
-
-		// // Uniform buffer 업데이트
-		// updateUniformBuffer(currentFrame);
-
-		// [Fence 초기화]
-		// Fence signal 상태 not signaled 로 초기화
-		vkResetFences(device, 1, &inFlightFences[currentFrame]);
-
-		// [Command Buffer에 명령 기록]
-		// 커맨드 버퍼 초기화 및 명령 기록
-		vkResetCommandBuffer(commandBuffers[currentFrame], /*VkCommandBufferResetFlagBits*/ 0); // 두 번째 매개변수인 Flag 를 0으로 초기화하면 기본 초기화 진행
-		recordCommandBuffer(scene, commandBuffers[currentFrame], imageIndex); // 현재 작업할 image의 index와 commandBuffer를 전송
-
-		// [렌더링 Command Buffer 제출]
-		// 렌더링 커맨드 버퍼 제출 정보 객체 생성
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-		// 작업 실행 신호를 받을 대기 세마포어 설정 (해당 세마포어가 signal 상태가 되기 전엔 대기)
-		VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};				
-		VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}; 	
-		submitInfo.waitSemaphoreCount = 1;														// 대기 세마포어 개수
-		submitInfo.pWaitSemaphores = waitSemaphores;											// 대기 세마포어 등록
-		submitInfo.pWaitDstStageMask = waitStages;												// 대기할 시점 등록 (그 전까지는 세마포어 상관없이 그냥 진행)	
-
-		// 커맨드 버퍼 등록
-		submitInfo.commandBufferCount = 1;														// 커맨드 버퍼 개수 등록
-		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];								// 커매드 버퍼 등록
-
-		// 작업이 완료된 후 신호를 보낼 세마포어 설정 (작업이 끝나면 해당 세마포어 signal 상태로 변경)
-		VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
-		submitInfo.signalSemaphoreCount = 1;													// 작업 끝나고 신호를 보낼 세마포어 개수
-		submitInfo.pSignalSemaphores = signalSemaphores;										// 작업 끝나고 신호를 보낼 세마포어 등록
-
-		// 커맨드 버퍼 제출 
-		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
-			throw std::runtime_error("failed to submit draw command buffer!");
-		}
-
-		// [프레젠테이션 Command Buffer 제출]
-		// 프레젠테이션 커맨드 버퍼 제출 정보 객체 생성
-		VkPresentInfoKHR presentInfo{};
-		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-		// 작업 실행 신호를 받을 대기 세마포어 설정
-		presentInfo.waitSemaphoreCount = 1;														// 대기 세마포어 개수
-		presentInfo.pWaitSemaphores = signalSemaphores;											// 대기 세마포어 등록
-
-		// 제출할 스왑 체인 설정
-		VkSwapchainKHR swapChains[] = {swapChain};
-		presentInfo.swapchainCount = 1;															// 스왑체인 개수
-		presentInfo.pSwapchains = swapChains;													// 스왑체인 등록
-		presentInfo.pImageIndices = &imageIndex;												// 스왑체인에서 표시할 이미지 핸들 등록
-
-		// 프레젠테이션 큐에 이미지 제출
-		result = vkQueuePresentKHR(presentQueue, &presentInfo);
-
-		// 프레젠테이션 실패 오류 발생 시
-		// if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) { <- framebufferResized는 명시적으로 해줄뿐 사실상 필요하지가 않음 나중에 수정할꺼면 하자
-		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-			// 스왑 체인 크기와 surface의 크기가 호환되지 않는 경우
-			recreateSwapChain(); 	// 변경된 surface에 맞는 SwapChain, ImageView, FrameBuffer 생성 
-		} else if (result != VK_SUCCESS) {
-			// 진짜 오류 gg
-			throw std::runtime_error("failed to present swap chain image!");
-		}
-		// [프레임 인덱스 증가]
-		// 다음 작업할 프레임 변경
-		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	static std::unique_ptr<SwapChain> createSwapChain(GLFWwindow* window) {
+		std::unique_ptr<SwapChain> swapChain = std::unique_ptr<SwapChain>(new SwapChain());
+		swapChain->initSwapChain(window);
+		return swapChain;
 	}
 
 	void cleanup() {
-		// 스왑 체인 파괴
-		cleanupSwapChain();
-
-		vkDestroyPipeline(device, graphicsPipeline, nullptr);      	// 파이프라인 객체 삭제
-		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);  	// 파이프라인 레이아웃 삭제
-		vkDestroyRenderPass(device, renderPass, nullptr);         	// 렌더 패스 삭제
-
-        for (size_t i = 0; i < uniformBuffers.size(); i++) {
-			if (uniformBuffers[i] != VK_NULL_HANDLE) { // 유효성 검사 추가
-				vkDestroyBuffer(device, uniformBuffers[i], nullptr);
-			}
-			uniformBuffers[i] = VK_NULL_HANDLE;
-			if (uniformBuffersMemory[i] != VK_NULL_HANDLE) { // 유효성 검사 추가
-			vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
-			}
-			uniformBuffersMemory[i] = VK_NULL_HANDLE;
+		for (auto imageView : swapChainImageViews) {
+			vkDestroyImageView(device, imageView, nullptr);
 		}
-
-		for (size_t i = 0; i < m_uniformBuffers.size(); i++) {
-			m_uniformBuffers[i]->cleanup();
-		}
-
-
-		vkDestroyDescriptorPool(device, descriptorPool, nullptr);			// 디스크립터 풀 삭제
- 
-		// vkDestroySampler(device, textureSampler, nullptr);					// 샘플러 삭제
-		// vkDestroyImageView(device, textureImageView, nullptr);				// 텍스처 이미지뷰 삭제
-
-		// vkDestroyImage(device, textureImage, nullptr);						// 텍스처 객체 삭제
-		// vkFreeMemory(device, textureImageMemory, nullptr);					// 텍스처에 할당된 메모리 삭제
-        
-		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);	// 디스크립터 셋 레이아수 삭제
-
-		// vkDestroyBuffer(device, indexBuffer, nullptr);				// 인덱스 버퍼 객체 삭제
-		// vkFreeMemory(device, indexBufferMemory, nullptr);			// 인덱스 버퍼에 할당된 메모리 삭제
-		
-		// vkDestroyBuffer(device, vertexBuffer, nullptr);				// 버텍스 버퍼 객체 삭제
-		// vkFreeMemory(device, vertexBufferMemory, nullptr);			// 버텍스 버퍼에 할당된 메모리 삭제
-
-		// 세마포어, 펜스 파괴
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
-			vkDestroyFence(device, inFlightFences[i], nullptr);
-		}
-
-		// vkDestroyCommandPool(device, commandPool, nullptr); 	  	// 커맨드 풀 파괴
-
-		// vkDestroyDevice(device, nullptr);                         	// 논리적 장치 파괴
-
-		// // 메시지 객체 파괴
-		// if (enableValidationLayers) {
-		// 	DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
-		// }
-
-		// vkDestroySurfaceKHR(instance, surface, nullptr);          	// 화면 객체 파괴
-		// vkDestroyInstance(instance, nullptr);						// 인스턴스 파괴
-		VulkanContext::getContext().cleanup();
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
-	/*
-		변경된 window 크기에 맞게 SwapChain, ImageView, FrameBuffer 재생성
-	*/
 	void recreateSwapChain() {
-		// 현재 프레임버퍼 사이즈 체크
-		int width = 0, height = 0;
-		glfwGetFramebufferSize(window, &width, &height);
-		
-		// 현재 프레임 버퍼 사이즈가 0이면 다음 이벤트 호출까지 대기
-		while (width == 0 || height == 0) {
-			glfwGetFramebufferSize(window, &width, &height);
-			glfwWaitEvents(); // 다음 이벤트 발생 전까지 대기하여 CPU 사용률을 줄이는 함수 
-		}
-
-		// 모든 GPU 작업 종료될 때까지 대기 (사용중인 리소스를 건들지 않기 위해)
-		vkDeviceWaitIdle(device);
-
-		// 스왑 체인 관련 리소스 정리
-		cleanupSwapChain();
-
-		// 현재 window 크기에 맞게 SwapChain, DepthResource, ImageView, FrameBuffer 재생성
+		cleanup();
 		createSwapChain();
 		createImageViews();
-		createColorResources();
-		createDepthResources();
-		createFramebuffers();
 	}
 
-	
+	VkSwapchainKHR getSwapChain() { return swapChain; }
+	std::vector<VkImage>& getSwapChainImages() { return swapChainImages; }
+	VkFormat getSwapChainImageFormat() { return swapChainImageFormat; }
+	VkExtent2D getSwapChainExtent() { return swapChainExtent; }
+	std::vector<VkImageView>& getSwapChainImageViews() { return swapChainImageViews; }
+
+
+
+
 
 private:
-	//tmp
-	// std::vector<VkBuffer> m_uniformBuffers; // 2 * object 개수 만큼
-	// std::vector<VkDeviceMemory> m_uniformBuffersMemory; // 2 * object 개수 만큼
-	// std::vector<void*> m_uniformBuffersMapped; // 2 * object 개수 만큼
-
-
-
-	GLFWwindow* window;
-
-	// instance
-	VkInstance instance;
-	VkDebugUtilsMessengerEXT debugMessenger;
-	VkSurfaceKHR surface;
-
-	// device
-	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
-	VkDevice device;
-	
-	// command
-	VkCommandPool commandPool;
-	VkQueue graphicsQueue;
-	VkQueue presentQueue;
-
-	// swapchain
 	VkSwapchainKHR swapChain;
 	std::vector<VkImage> swapChainImages;
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
 	std::vector<VkImageView> swapChainImageViews;
-	std::vector<VkFramebuffer> swapChainFramebuffers;
-
-	// renderpass
-	VkRenderPass renderPass;
-	VkDescriptorSetLayout descriptorSetLayout;
-	VkPipelineLayout pipelineLayout;
-	VkPipeline graphicsPipeline;
-
-	VkImage colorImage;
-	VkDeviceMemory colorImageMemory;
-	VkImageView colorImageView;
-
-	VkImage depthImage;
-	VkDeviceMemory depthImageMemory;
-	VkImageView depthImageView;
-
-	uint32_t mipLevels;
-	VkImage textureImage;
-	VkDeviceMemory textureImageMemory;
-	VkImageView textureImageView;
-    VkSampler textureSampler;
-
-	std::vector<Vertex> vertices;
-	std::vector<uint32_t> indices;
-	VkBuffer vertexBuffer;
-	VkDeviceMemory vertexBufferMemory;
-	VkBuffer indexBuffer;
-	VkDeviceMemory indexBufferMemory;
-
-	std::vector<VkBuffer> uniformBuffers;
-	std::vector<VkDeviceMemory> uniformBuffersMemory;
-	std::vector<void*> uniformBuffersMapped;
-
-	std::vector< std::shared_ptr<UniformBuffer> > m_uniformBuffers;
-
-	VkDescriptorPool descriptorPool;
-	std::vector<VkDescriptorSet> descriptorSets;
-	
-	std::vector<VkCommandBuffer> commandBuffers;
-
-	std::vector<VkSemaphore> imageAvailableSemaphores;
-	std::vector<VkSemaphore> renderFinishedSemaphores;
-	std::vector<VkFence> inFlightFences;
-	uint32_t currentFrame = 0;
 
 
-	Renderer() {}
-	void init(GLFWwindow* window) {
+	GLFWwindow* window;
+	VkDevice device;
+	VkPhysicalDevice physicalDevice;
+	VkSurfaceKHR surface;
 
 
+	void initSwapChain(GLFWwindow* window) {
 		this->window = window;
 
-		auto &context = VulkanContext::getContext();
-		context.initContext(window);
-
-		instance = context.getInstance();
-		debugMessenger = context.getDebugMessenger();
-		surface = context.getSurface();
-		physicalDevice = context.getPhysicalDevice();
+		auto& context = VulkanContext::getContext();
 		device = context.getDevice();
-		graphicsQueue = context.getGraphicsQueue();
-		presentQueue = context.getPresentQueue();
-		commandPool = context.getCommandPool();
-		msaaSamples = context.getMsaaSamples();
-
-
-		// createInstance();
-		// setupDebugMessenger();
-		// createSurface();
-
-		// pickPhysicalDevice();
-		// createLogicalDevice();
+		physicalDevice = context.getPhysicalDevice();
+		surface = context.getSurface();
 
 		createSwapChain();
 		createImageViews();
-			createSyncObjects();
-
-		createRenderPass();
-			createDescriptorSetLayout();
-			createGraphicsPipeline();
-
-		// createCommandPool();
-		createCommandBuffers();
-
-		createColorResources();
-		createDepthResources();
-
-		createFramebuffers();
-
-			// loadModel();
-			// createVertexBuffer();
-			// createIndexBuffer();
-			// createUniformBuffers();
-
-			// createTextureImage();
-			// createTextureImageView();
-			// createTextureSampler();
-
-		createDescriptorPool();
-		// createDescriptorSets();
 	}
 
-	// FrameBuffer, ImageView, SwapChain 삭제
-	void cleanupSwapChain() {
-
-		// 깊이 버퍼 이미지, 이미지 뷰, 메모리 삭제 
-        vkDestroyImageView(device, depthImageView, nullptr);
-        vkDestroyImage(device, depthImage, nullptr);
-        vkFreeMemory(device, depthImageMemory, nullptr);
-
-		// 컬러 버퍼 이미지, 이미지 뷰, 메모리 삭제
-		vkDestroyImageView(device, colorImageView, nullptr);
-		vkDestroyImage(device, colorImage, nullptr);
-		vkFreeMemory(device, colorImageMemory, nullptr);
-		
-		// 프레임 버퍼 배열 삭제
-		for (auto framebuffer : swapChainFramebuffers) {
-			vkDestroyFramebuffer(device, framebuffer, nullptr);
-		}
-		// 이미지뷰 삭제
-		for (auto imageView : swapChainImageViews) {
-			vkDestroyImageView(device, imageView, nullptr);
-		}
-		// 스왑 체인 파괴
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
-	}
-
-	/*
-		[인스턴스 생성]
-		인스턴스 구성 요소
-		1. 애플리케이션 정보
-		2. 확장
-		3. 레이어
-		4. 디버그 모드일시 디버그 메신저 객체 생성 정보 추가
-	*/ 
-	void createInstance() {
-		// 디버그 모드에서 검증 레이어 적용 불가능시 예외 발생
-		if (enableValidationLayers && !checkValidationLayerSupport()) {
-			throw std::runtime_error("validation layers requested, but not available!");
-		}
-
-		// 애플리케이션 정보를 담은 구조체
-		VkApplicationInfo appInfo{};
-		appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-		appInfo.pApplicationName = "Hello Triangle";
-		appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-		appInfo.pEngineName = "No Engine";
-		appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-		appInfo.apiVersion = VK_API_VERSION_1_0;
-
-		// 인스턴스 생성을 위한 정보를 담은 구조체
-		VkInstanceCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-		createInfo.pApplicationInfo = &appInfo;
-
-		std::vector<const char*> extensions = getRequiredExtensions();
-		createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-		createInfo.ppEnabledExtensionNames = extensions.data();
-	
-		// 디버깅 메시지 객체 생성을 위한 정보 구조체
-		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
-
-		if (enableValidationLayers) {
-			// 디버그 모드시 구조체에 검증 레이어 포함
-			createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-			// 인스턴스 생성 및 파괴시에도 검증 가능
-			populateDebugMessengerCreateInfo(debugCreateInfo);
-			createInfo.pNext = reinterpret_cast<VkDebugUtilsMessengerCreateInfoEXT*>(&debugCreateInfo);
-		} else {
-			// 디버그 모드 아닐 시 검증 레이어 x
-			createInfo.enabledLayerCount = 0;		
-			createInfo.pNext = nullptr;
-		}
-
-		// 인스턴스 생성
-		if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create instance!");
-		}
-	}
-
-	//vkDebugUtilsMessengerCreateInfoEXT 구조체 내부를 채워주는 함수
-	void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& createInfo) {
-		createInfo = {};
-		createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-		createInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-									VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-									VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-		createInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-								VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
-								VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-		createInfo.pfnUserCallback = debugCallback;
-	}
-
-	// 디버그 메신저 객체 생성
-	void setupDebugMessenger() {
-		// 디버그 모드 아니면 return
-		if (!enableValidationLayers) return;
-
-		// VkDebugUtilsMessengerCreateInfoEXT 구조체 생성
-		VkDebugUtilsMessengerCreateInfoEXT createInfo;
-		populateDebugMessengerCreateInfo(createInfo);
-
-		// 디버그 메시지 객체 생성
-		if (CreateDebugUtilsMessengerEXT(instance, &createInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
-			throw std::runtime_error("failed to set up debug messenger!");
-		}
-	}
-	
-	// OS에 맞는 surface를 glfw 함수를 통해 생성
-	void createSurface() {
-		if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create window surface!");
-		}
-	}
-	
-	// 적절한 GPU 고르는 함수
-	void pickPhysicalDevice() {
-		// GPU 장치 목록 불러오기
-		uint32_t deviceCount = 0;
-		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-
-		if (deviceCount == 0) {
-  			  throw std::runtime_error("failed to find GPUs with Vulkan support!");
-		}
-
-		std::vector<VkPhysicalDevice> devices(deviceCount);
-		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-
-		// 적합한 GPU 탐색
-		for (const auto& device : devices) {
-			if (isDeviceSuitable(device)) {
-				physicalDevice = device;
-				msaaSamples = getMaxUsableSampleCount();
-				break;
-			}
-		}
-
-		// 적합한 GPU가 발견되지 않은 경우 에러 발생
-		if (physicalDevice == VK_NULL_HANDLE) {
-			throw std::runtime_error("failed to find a suitable GPU!");
-		}
-	}	
-
-	// GPU와 소통할 인터페이스인 Logical device 생성
-	void createLogicalDevice() {
-		// 그래픽 큐 패밀리의 인덱스를 가져옴
-		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-		// 큐 패밀리의 인덱스들을 set으로 래핑
-		std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
-
-		// 큐 생성을 위한 정보 설정 
-		std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-		// 큐 우선순위 0.0f ~ 1.0f 로 표현
-		float queuePriority = 1.0f;
-		// 큐 패밀리 별로 정보 생성
-		for (uint32_t queueFamily : uniqueQueueFamilies) {
-			VkDeviceQueueCreateInfo queueCreateInfo{};
-			queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-			queueCreateInfo.queueFamilyIndex = queueFamily;
-			queueCreateInfo.queueCount = 1;
-			queueCreateInfo.pQueuePriorities = &queuePriority;
-			queueCreateInfos.push_back(queueCreateInfo);
-		}
-
-		// 사용할 장치 기능이 포함된 구조체
-		// vkGetPhysicalDeviceFeatures 함수로 디바이스에서 설정 가능한
-		// 장치 기능 목록을 확인할 수 있음
-		// 일단 지금은 VK_FALSE로 전부 등록함
-		VkPhysicalDeviceFeatures deviceFeatures{};
-        deviceFeatures.samplerAnisotropy = VK_TRUE;		// 이방성 필터링 사용 설정
-		deviceFeatures.sampleRateShading = VK_TRUE; 	// 디바이스에 샘플 셰이딩 기능 활성화
-
-		// 논리적 장치 생성을 위한 정보 등록
-		VkDeviceCreateInfo createInfo{};
-		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-		createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
-		createInfo.pQueueCreateInfos = queueCreateInfos.data();
-		createInfo.pEnabledFeatures = &deviceFeatures;
-
-		// 확장 설정
-		createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
-		createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-		
-		// 구버전 호환을 위해 디버그 모드일 경우
-		// 검증 레이어를 포함 시키지만, 현대 시스템에서는 논리적 장치의 레이어를 안 씀
-		if (enableValidationLayers) {
-			createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-			createInfo.ppEnabledLayerNames = validationLayers.data();
-		} else {
-			createInfo.enabledLayerCount = 0;
-		}
-
-		// 논리적 장치 생성
-		if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) {
- 		   throw std::runtime_error("failed to create logical device!");
-		}
-
-		// 큐 핸들 가져오기
-		vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
-		vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
-	}
-
-	/*
-	[스왑 체인 생성]
-	스왑 체인의 역할
-	1. 다수의 프레임 버퍼(이미지) 관리
-	2. 이중 버퍼링 및 삼중 버퍼링 (다수의 버퍼를 이용하여 화면에 프레임 전환시 딜레이 최소화)
-	3. 프레젠테이션 모드 관리 (화면에 프레임을 표시하는 방법 설정 가능)
-	4. 화면과 GPU작업의 동기화 (GPU가 이미지를 생성하는 작업과 화면이 이미지를 띄우는 작업 간의 동기화) 
-	*/ 
 	void createSwapChain() {
 		// GPU와 surface가 지원하는 SwapChain 정보 불러오기
 		SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
@@ -2516,6 +1838,7 @@ private:
 		swapChainExtent = extent;
 	}
 
+
 	/*
 	[이미지 뷰 생성]
 	이미지 뷰란 VKImage에 대한 접근 방식을 정의하는 객체
@@ -2528,8 +1851,598 @@ private:
 
 		// 이미지의 개수만큼 이미지뷰 생성
 		for (size_t i = 0; i < swapChainImages.size(); i++) {
-			swapChainImageViews[i] = createImageView(swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+			swapChainImageViews[i] = VulkanUtil::createImageView(swapChainImages[i], swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
 		}
+	}
+
+	/*
+	GPU가 지원하는 큐패밀리 인덱스 가져오기
+	그래픽스 큐패밀리, 프레젠테이션 큐패밀리 인덱스를 저장
+	해당 큐패밀리가 없으면 optional 객체에 정보가 empty 상태
+	*/
+	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
+		QueueFamilyIndices indices;
+
+		// GPU가 지원하는 큐 패밀리 개수 가져오기
+		uint32_t queueFamilyCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+
+		// GPU가 지원하는 큐 패밀리 리스트 가져오기
+		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+		// 그래픽 큐 패밀리 검색
+		int i = 0;
+		for (const auto& queueFamily : queueFamilies) {
+			// 그래픽 큐 패밀리 찾기 성공한 경우 indices에 값 생성
+			if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+				indices.graphicsFamily = i;
+			}
+
+			// GPU의 i 인덱스 큐 패밀리가 surface에서 프레젠테이션을 지원하는지 확인
+			VkBool32 presentSupport = false;
+			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+
+			// 프레젠테이션 큐 패밀리 등록
+			if (presentSupport) {
+				indices.presentFamily = i;
+			}
+
+			// 그래픽 큐 패밀리 찾은 경우 break
+			if (indices.isComplete()) {
+				break;
+			}
+
+			i++;
+		}
+		// 그래픽 큐 패밀리를 못 찾은 경우 값이 없는 채로 반환 됨
+		return indices;
+	}
+
+	// GPU와 surface가 호환하는 SwapChain 정보를 반환
+	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device) {
+		SwapChainSupportDetails details;
+
+		// GPU와 surface가 호환할 수 있는 capability 정보 쿼리
+		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+
+		// device에서 surface 객체를 지원하는 format이 존재하는지 확인 
+		uint32_t formatCount;
+		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
+
+		if (formatCount != 0) {
+			details.formats.resize(formatCount);
+			vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
+		}
+
+		// device에서 surface 객체를 지원하는 presentMode가 있는지 확인 
+		uint32_t presentModeCount;
+		vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
+
+		if (presentModeCount != 0) {
+			details.presentModes.resize(presentModeCount);
+			vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data());
+		}
+
+		return details;
+	}
+
+	/* 
+	지원하는 포맷중 선호하는 포맷 1개 반환
+	선호하는 포맷이 없을 시 가장 앞에 있는 포맷 반환
+	*/
+	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
+		for (const auto& availableFormat : availableFormats) {
+			// 만약 선호하는 포맷이 존재할 경우 그 포맷을 반환
+			if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
+				availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+				return availableFormat;
+			}
+		}
+		// 선호하는 포맷이 없는 경우 첫 번째 포맷 반환
+		return availableFormats[0];
+	}
+
+	/*
+	지원하는 프레젠테이션 모드 중 선호하는 모드 선택
+	선호하는 모드가 없을 시 기본 값인 VK_PRESENT_MODE_FIFO_KHR 반환
+	*/
+	VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
+		for (const auto& availablePresentMode : availablePresentModes) {
+			// 선호하는 mode가 존재하면 해당 mode 반환 
+			if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
+				return availablePresentMode;
+			}
+		}
+		// 선호하는 mode가 존재하지 않으면 기본 값인 VK_PRESENT_MODE_FIFO_KHR 반환
+		return VK_PRESENT_MODE_FIFO_KHR;
+	}
+
+
+	// 스왑 체인 이미지의 해상도 결정
+	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
+		// 만약 currentExtent의 width가 std::numeric_limits<uint32_t>::max()가 아니면, 시스템이 이미 권장하는 스왑체인 크기를 제공하는 것
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+			return capabilities.currentExtent; // 권장 사항 사용
+		} else {
+			// 그렇지 않은 경우, 창의 현재 프레임 버퍼 크기를 사용하여 스왑체인 크기를 결정
+			int width, height;
+			glfwGetFramebufferSize(window, &width, &height);
+
+			VkExtent2D actualExtent = {
+				static_cast<uint32_t>(width),
+				static_cast<uint32_t>(height)
+			};
+
+			// width, height를 capabilites의 min, max 범위로 clamping
+			actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+			actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+
+			return actualExtent;
+		}
+	}
+
+};
+
+
+class SyncObjects {
+public:
+	static std::unique_ptr<SyncObjects> createSyncObjects() {
+		std::unique_ptr<SyncObjects> syncObjects = std::unique_ptr<SyncObjects>(new SyncObjects());
+		syncObjects->initSyncObjects();
+		return syncObjects;
+	}
+
+	~SyncObjects() {}
+
+	void cleanup() {
+		auto& context = VulkanContext::getContext();
+		VkDevice device = context.getDevice();
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+			vkDestroyFence(device, inFlightFences[i], nullptr);
+		}
+	}
+
+	VkSemaphore getImageAvailableSemaphore(size_t currentFrame) {
+		return imageAvailableSemaphores[currentFrame];
+	}
+
+	VkSemaphore getRenderFinishedSemaphore(size_t currentFrame) {
+		return renderFinishedSemaphores[currentFrame];
+	}
+
+	VkFence getInFlightFence(size_t currentFrame) {
+		return inFlightFences[currentFrame];
+	}
+
+private:
+	std::vector<VkSemaphore> imageAvailableSemaphores;
+	std::vector<VkSemaphore> renderFinishedSemaphores;
+	std::vector<VkFence> inFlightFences;
+
+	void initSyncObjects() {
+		auto& context = VulkanContext::getContext();
+		VkDevice device = context.getDevice();
+
+		// 세마포어, 펜스 vector 동시에 처리할 최대 프레임 버퍼 수만큼 할당
+		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+
+		// 세마포어 생성 설정 값 준비
+		VkSemaphoreCreateInfo semaphoreInfo{};
+		semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+		// 펜스 생성 설정 값 준비
+		VkFenceCreateInfo fenceInfo{};
+		fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;         // signal 등록된 상태로 생성 (시작하자마자 wait으로 시작하므로 필요한 FLAG)
+
+		// 세마포어, 펜스 생성
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
+				vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS ||
+				vkCreateFence(device, &fenceInfo, nullptr, &inFlightFences[i]) != VK_SUCCESS) {
+				throw std::runtime_error("failed to create synchronization objects for a frame!");
+			}
+		}
+	}
+};
+
+class Renderer {
+public:
+	static std::unique_ptr<Renderer> createRenderer(GLFWwindow* window) {
+		std::unique_ptr<Renderer> renderer = std::unique_ptr<Renderer>(new Renderer());
+		renderer->init(window);
+		return renderer;
+	}
+	~Renderer() {}
+
+	// 유니폼 버퍼 생성
+	void createUniformBuffers(Scene *scene) {
+		size_t objectCount = scene->getObjectCount();
+		if (objectCount == 0) {
+			throw std::runtime_error("failed to create uniform buffers!");
+		}
+		// 유니폼 버퍼에 저장 될 구조체의 크기
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+		// 각 요소들을 동시에 처리 가능한 최대 프레임 수만큼 만들어 둔다.
+		m_uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT * objectCount);
+
+		for (size_t i = 0; i < objectCount; i++) {
+			for (size_t j = 0; j < MAX_FRAMES_IN_FLIGHT; j++) {
+				m_uniformBuffers[i * MAX_FRAMES_IN_FLIGHT + j] = UniformBuffer::createUniformBuffer(bufferSize);
+			}
+		}
+	}
+
+	// 디스크립터 셋 할당 및 업데이트 하여 리소스 바인딩
+	void createDescriptorSets(Scene* scene) {
+		size_t objectCount = scene->getObjectCount();
+		std::vector<std::shared_ptr<Object>> objects = scene->getObjects();
+
+		if (objectCount == 0) {
+			throw std::runtime_error("failed to create descriptor sets!");
+		}
+		// 디스크립터 셋 레이아웃 벡터 생성 (기존 만들어놨던 디스크립터 셋 레이아웃 객체 이용)
+		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT * objectCount, descriptorSetLayout);
+
+		// 디스크립터 셋 할당에 필요한 정보를 설정하는 구조체
+		VkDescriptorSetAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		allocInfo.descriptorPool = descriptorPool;										// 디스크립터 셋을 할당할 디스크립터 풀 지정
+		allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * objectCount);		// 할당할 디스크립터 셋 개수 지정
+		allocInfo.pSetLayouts = layouts.data();											// 할당할 디스크립터 셋 의 레이아웃을 정의하는 배열 
+
+		descriptorSets.resize(MAX_FRAMES_IN_FLIGHT * objectCount);									// 디스크립터 셋을 저장할 벡터 크기 설정
+		
+		// 디스크립터 풀에 디스크립터 셋 할당
+		if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate descriptor sets!");
+		}
+
+
+		for (size_t i = 0; i < objectCount; i++) {
+			for (size_t j = 0; j < MAX_FRAMES_IN_FLIGHT; j++) {
+				// 디스크립터 셋에 바인딩할 버퍼 정보 
+				VkDescriptorBufferInfo bufferInfo{};
+				bufferInfo.buffer = m_uniformBuffers[i * MAX_FRAMES_IN_FLIGHT + j]->getBuffer();			// 바인딩할 버퍼
+				bufferInfo.offset = 0;												// 버퍼에서 데이터 시작 위치 offset
+				bufferInfo.range = sizeof(UniformBufferObject);						// 셰이더가 접근할 버퍼 크기
+
+				std::shared_ptr<Texture> texture = objects[i]->getTexture();
+				VkDescriptorImageInfo imageInfo{};								
+				imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// 이미지의 레이아웃
+				imageInfo.imageView = texture->getImageView();						// 셰이더에서 사용할 이미지 뷰
+				imageInfo.sampler = texture->getSampler();							// 이미지 샘플링에 사용할 샘플러 설정
+				
+				// 디스크립터 셋 바인딩 및 업데이트
+				std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+
+				descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[0].dstSet = descriptorSets[i * MAX_FRAMES_IN_FLIGHT + j];					// 업데이트 할 디스크립터 셋
+				descriptorWrites[0].dstBinding = 0;													// 업데이트 할 바인딩 포인트
+				descriptorWrites[0].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
+				descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;				// 업데이트 할 디스크립터 타입
+				descriptorWrites[0].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
+				descriptorWrites[0].pBufferInfo = &bufferInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
+
+				descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descriptorWrites[1].dstSet = descriptorSets[i * MAX_FRAMES_IN_FLIGHT + j];					// 업데이트 할 디스크립터 셋
+				descriptorWrites[1].dstBinding = 1;													// 업데이트 할 바인딩 포인트
+				descriptorWrites[1].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
+				descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;		// 업데이트 할 디스크립터 타입
+				descriptorWrites[1].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
+				descriptorWrites[1].pImageInfo = &imageInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
+
+				// 디스크립터 셋을 업데이트 하여 사용할 리소스 바인딩
+				vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+			}
+		}
+	}
+
+	// getter
+	VkDevice getDevice() {
+		return device;
+	}
+
+	void drawFrame(Scene* scene) {
+		// [이전 GPU 작업 대기]
+		// 동시에 작업 가능한 최대 Frame 개수만큼 작업 중인 경우 대기 (가장 먼저 시작한 Frame 작업이 끝나서 Fence에 signal을 보내기를 기다림)
+		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+ 
+		// [작업할 image 준비]
+		// 이번 Frame 에서 사용할 이미지 준비 및 해당 이미지 index 받아오기 (준비가 끝나면 signal 보낼 세마포어 등록)
+		// vkAcquireNextImageKHR 함수는 CPU에서 swapChain과 surface의 호환성을 확인하고 GPU에 이미지 준비 명령을 내리는 함수
+		// 만약 image가 프레젠테이션 큐에 작업이 진행 중이거나 대기 중이면 해당 image는 사용하지 않고 대기한다.
+		uint32_t imageIndex;
+		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+		// image 준비 실패로 인한 오류 처리
+		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+			// 스왑 체인이 surface 크기와 호환되지 않는 경우로(창 크기 변경), 스왑 체인 재생성 후 다시 draw
+			recreateSwapChain();
+			return;
+		} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			// 진짜 오류 gg
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		// [Fence 초기화]
+		// Fence signal 상태 not signaled 로 초기화
+		vkResetFences(device, 1, &inFlightFences[currentFrame]);
+
+		// [Command Buffer에 명령 기록]
+		// 커맨드 버퍼 초기화 및 명령 기록
+		vkResetCommandBuffer(commandBuffers[currentFrame], /*VkCommandBufferResetFlagBits*/ 0); // 두 번째 매개변수인 Flag 를 0으로 초기화하면 기본 초기화 진행
+		recordCommandBuffer(scene, commandBuffers[currentFrame], imageIndex); // 현재 작업할 image의 index와 commandBuffer를 전송
+
+		// [렌더링 Command Buffer 제출]
+		// 렌더링 커맨드 버퍼 제출 정보 객체 생성
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+		// 작업 실행 신호를 받을 대기 세마포어 설정 (해당 세마포어가 signal 상태가 되기 전엔 대기)
+		VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};				
+		VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}; 	
+		submitInfo.waitSemaphoreCount = 1;														// 대기 세마포어 개수
+		submitInfo.pWaitSemaphores = waitSemaphores;											// 대기 세마포어 등록
+		submitInfo.pWaitDstStageMask = waitStages;												// 대기할 시점 등록 (그 전까지는 세마포어 상관없이 그냥 진행)	
+
+		// 커맨드 버퍼 등록
+		submitInfo.commandBufferCount = 1;														// 커맨드 버퍼 개수 등록
+		submitInfo.pCommandBuffers = &commandBuffers[currentFrame];								// 커매드 버퍼 등록
+
+		// 작업이 완료된 후 신호를 보낼 세마포어 설정 (작업이 끝나면 해당 세마포어 signal 상태로 변경)
+		VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
+		submitInfo.signalSemaphoreCount = 1;													// 작업 끝나고 신호를 보낼 세마포어 개수
+		submitInfo.pSignalSemaphores = signalSemaphores;										// 작업 끝나고 신호를 보낼 세마포어 등록
+
+		// 커맨드 버퍼 제출 
+		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
+			throw std::runtime_error("failed to submit draw command buffer!");
+		}
+
+		// [프레젠테이션 Command Buffer 제출]
+		// 프레젠테이션 커맨드 버퍼 제출 정보 객체 생성
+		VkPresentInfoKHR presentInfo{};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+		// 작업 실행 신호를 받을 대기 세마포어 설정
+		presentInfo.waitSemaphoreCount = 1;														// 대기 세마포어 개수
+		presentInfo.pWaitSemaphores = signalSemaphores;											// 대기 세마포어 등록
+
+		// 제출할 스왑 체인 설정
+		VkSwapchainKHR swapChains[] = {swapChain};
+		presentInfo.swapchainCount = 1;															// 스왑체인 개수
+		presentInfo.pSwapchains = swapChains;													// 스왑체인 등록
+		presentInfo.pImageIndices = &imageIndex;												// 스왑체인에서 표시할 이미지 핸들 등록
+
+		// 프레젠테이션 큐에 이미지 제출
+		result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+		// 프레젠테이션 실패 오류 발생 시
+		// if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) { <- framebufferResized는 명시적으로 해줄뿐 사실상 필요하지가 않음 나중에 수정할꺼면 하자
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+			// 스왑 체인 크기와 surface의 크기가 호환되지 않는 경우
+			recreateSwapChain(); 	// 변경된 surface에 맞는 SwapChain, ImageView, FrameBuffer 생성 
+		} else if (result != VK_SUCCESS) {
+			// 진짜 오류 gg
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+		// [프레임 인덱스 증가]
+		// 다음 작업할 프레임 변경
+		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	}
+
+	void cleanup() {
+		// 스왑 체인 파괴
+		cleanupSwapChain();
+		m_swapChain->cleanup();
+
+		vkDestroyPipeline(device, graphicsPipeline, nullptr);      	// 파이프라인 객체 삭제
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);  	// 파이프라인 레이아웃 삭제
+		vkDestroyRenderPass(device, renderPass, nullptr);         	// 렌더 패스 삭제
+
+
+		for (size_t i = 0; i < m_uniformBuffers.size(); i++) {
+			m_uniformBuffers[i]->cleanup();
+		}
+
+
+		vkDestroyDescriptorPool(device, descriptorPool, nullptr);			// 디스크립터 풀 삭제
+		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);	// 디스크립터 셋 레이아수 삭제
+
+
+		// 세마포어, 펜스 파괴
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+			vkDestroyFence(device, inFlightFences[i], nullptr);
+		}
+
+		VulkanContext::getContext().cleanup();
+	}
+
+	/*
+		변경된 window 크기에 맞게 SwapChain, ImageView, FrameBuffer 재생성
+	*/
+	void recreateSwapChain() {
+		// 현재 프레임버퍼 사이즈 체크
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+		
+		// 현재 프레임 버퍼 사이즈가 0이면 다음 이벤트 호출까지 대기
+		while (width == 0 || height == 0) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents(); // 다음 이벤트 발생 전까지 대기하여 CPU 사용률을 줄이는 함수 
+		}
+
+		// 모든 GPU 작업 종료될 때까지 대기 (사용중인 리소스를 건들지 않기 위해)
+		vkDeviceWaitIdle(device);
+
+		// 스왑 체인 관련 리소스 정리
+		cleanupSwapChain();
+
+		m_swapChain->recreateSwapChain();
+
+		// 현재 window 크기에 맞게 SwapChain, DepthResource, ImageView, FrameBuffer 재생성
+		// createSwapChain();
+		// createImageViews();
+		swapChain = m_swapChain->getSwapChain();
+		swapChainImages = m_swapChain->getSwapChainImages();
+		swapChainImageFormat = m_swapChain->getSwapChainImageFormat();
+		swapChainExtent = m_swapChain->getSwapChainExtent();
+		swapChainImageViews = m_swapChain->getSwapChainImageViews();
+
+		createColorResources();
+		createDepthResources();
+		createFramebuffers();
+	}
+
+	
+
+private:
+	GLFWwindow* window;
+	VkSurfaceKHR surface;
+	// device
+	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+	VkDevice device;
+	
+	// command
+	VkCommandPool commandPool;
+	VkQueue graphicsQueue;
+	VkQueue presentQueue;
+
+
+	std::unique_ptr<SwapChain> m_swapChain;
+
+	// swapchain
+	VkSwapchainKHR swapChain;
+	std::vector<VkImage> swapChainImages;
+	VkFormat swapChainImageFormat;
+	VkExtent2D swapChainExtent;
+	std::vector<VkImageView> swapChainImageViews;
+	std::vector<VkFramebuffer> swapChainFramebuffers;
+
+	// renderpass
+	VkRenderPass renderPass;
+	VkDescriptorSetLayout descriptorSetLayout;
+	VkPipelineLayout pipelineLayout;
+	VkPipeline graphicsPipeline;
+
+	VkImage colorImage;
+	VkDeviceMemory colorImageMemory;
+	VkImageView colorImageView;
+
+	VkImage depthImage;
+	VkDeviceMemory depthImageMemory;
+	VkImageView depthImageView;
+
+	std::vector< std::shared_ptr<UniformBuffer> > m_uniformBuffers;
+
+	VkDescriptorPool descriptorPool;
+	std::vector<VkDescriptorSet> descriptorSets;
+	
+	std::vector<VkCommandBuffer> commandBuffers;
+
+	std::vector<VkSemaphore> imageAvailableSemaphores;
+	std::vector<VkSemaphore> renderFinishedSemaphores;
+	std::vector<VkFence> inFlightFences;
+	uint32_t currentFrame = 0;
+
+
+	Renderer() {}
+	void init(GLFWwindow* window) {
+
+
+		this->window = window;
+
+		auto &context = VulkanContext::getContext();
+		context.initContext(window);
+
+		surface = context.getSurface();
+		physicalDevice = context.getPhysicalDevice();
+		device = context.getDevice();
+		graphicsQueue = context.getGraphicsQueue();
+		presentQueue = context.getPresentQueue();
+		commandPool = context.getCommandPool();
+		msaaSamples = context.getMsaaSamples();
+
+		m_swapChain = SwapChain::createSwapChain(window);
+
+		swapChain = m_swapChain->getSwapChain();
+		swapChainImages = m_swapChain->getSwapChainImages();
+		swapChainImageFormat = m_swapChain->getSwapChainImageFormat();
+		swapChainExtent = m_swapChain->getSwapChainExtent();
+		swapChainImageViews = m_swapChain->getSwapChainImageViews();
+
+
+		// createInstance();
+		// setupDebugMessenger();
+		// createSurface();
+
+		// pickPhysicalDevice();
+		// createLogicalDevice();
+
+
+		// createSwapChain();
+		// createImageViews();
+			createSyncObjects();
+
+		createRenderPass();
+			createDescriptorSetLayout();
+			createGraphicsPipeline();
+
+		// createCommandPool();
+		createCommandBuffers();
+
+		createColorResources();
+		createDepthResources();
+
+		createFramebuffers();
+
+			// loadModel();
+			// createVertexBuffer();
+			// createIndexBuffer();
+			// createUniformBuffers();
+
+			// createTextureImage();
+			// createTextureImageView();
+			// createTextureSampler();
+
+		createDescriptorPool();
+		// createDescriptorSets();
+	}
+
+	// FrameBuffer, ImageView, SwapChain 삭제
+	void cleanupSwapChain() {
+
+		// 깊이 버퍼 이미지, 이미지 뷰, 메모리 삭제 
+        vkDestroyImageView(device, depthImageView, nullptr);
+        vkDestroyImage(device, depthImage, nullptr);
+        vkFreeMemory(device, depthImageMemory, nullptr);
+
+		// 컬러 버퍼 이미지, 이미지 뷰, 메모리 삭제
+		vkDestroyImageView(device, colorImageView, nullptr);
+		vkDestroyImage(device, colorImage, nullptr);
+		vkFreeMemory(device, colorImageMemory, nullptr);
+		
+		// 프레임 버퍼 배열 삭제
+		for (auto framebuffer : swapChainFramebuffers) {
+			vkDestroyFramebuffer(device, framebuffer, nullptr);
+		}
+		// // 이미지뷰 삭제
+		// for (auto imageView : swapChainImageViews) {
+		// 	vkDestroyImageView(device, imageView, nullptr);
+		// }
+		// // 스왑 체인 파괴
+		// vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
 	/*
@@ -2867,34 +2780,13 @@ private:
 		}
 	}
 
-	/*
-		[커맨드 풀 생성]
-		커맨드 풀이란?
-		1. 커맨드 버퍼들을 관리한다.
-		2. 큐 패밀리당 1개의 커맨드 풀이 필요하다.
-	*/
-	void createCommandPool() {
-		// 큐 패밀리 인덱스 가져오기
-		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
-
-		VkCommandPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-		poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; 		// 커맨드 버퍼를 개별적으로 재설정할 수 있도록 설정 
-																				// (이게 아니면 커맨드 풀의 모든 커맨드 버퍼 설정이 한 번에 이루어짐)
-		poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(); 	// 그래픽스 큐 인덱스 등록 (대응시킬 큐 패밀리 등록)
-
-		// 커맨드 풀 생성
-		if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create command pool!");
-		}
-	}
 
 	// 멀티샘플링용 color Image생성
     void createColorResources() {
         VkFormat colorFormat = swapChainImageFormat;
 
-        createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, colorImage, colorImageMemory);
-        colorImageView = createImageView(colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+        VulkanUtil::createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, colorFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, colorImage, colorImageMemory);
+        colorImageView = VulkanUtil::createImageView(colorImage, colorFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
     }
 
 	// Depth test에 쓰일 image, imageView 준비
@@ -2902,8 +2794,8 @@ private:
 		// depth image의 format 결정
         VkFormat depthFormat = findDepthFormat();
 
-        createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
-        depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
+        VulkanUtil::createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
+        depthImageView = VulkanUtil::createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
     }
 
 	// Vulkan의 특정 format에 대해 GPU가 tiling의 features를 지원하는지 확인
@@ -2934,517 +2826,6 @@ private:
 		);
 	}
 
-	bool hasStencilComponent(VkFormat format) {
-		return format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D24_UNORM_S8_UINT;
-	}
-
-	void createTextureImage() {
-		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha); // 알파 채널을 포함하여 rgba 픽셀로 이미지 저장
-		VkDeviceSize imageSize = texWidth * texHeight * 4;  // 이미지 크기 (픽셀당 4byte)
-        mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1; // mipLevel 설정
-
-
-		if (!pixels) {
-			// 로드 실패시 오류 처리
-			throw std::runtime_error("failed to load texture image!");
-		}
-
-		// 스테이징 버퍼 생성
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-		createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
-
-		// 스테이징 버퍼에 이미지 데이터 복사
-		void* data;
-		vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
-		memcpy(data, pixels, static_cast<size_t>(imageSize));
-		vkUnmapMemory(device, stagingBufferMemory);
-
-		// 이미지 데이터 해제
-		stbi_image_free(pixels);
-
-		// 이미지 객체 생성
-		createImage(texWidth, texHeight, mipLevels, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
-
-		// Top stage 끝나고 베리어를 이용한 이미지 전환 설정 
-		// (같은 작업 큐에서 Transfer 단계 들어가는 다른 작업들 해당 베리어 작업이 끝날때까지 stop)
-		transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels);
-		
-		// 커맨드 버퍼를 이용한 버퍼 -> 이미지 데이터 복사 실행
-		copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-
-		// Transfer 끝나고 베리어를 이용한 이미지 전환 설정
-		// (같은 작업 큐에서 Fragment shader 단계 들어가는 다른 작업들 해당 베리어 작업이 끝날때까지 stop)
-		// mipmap 생성에서 하는걸로 변경
-		// transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels);
-
-		// 스테이징 버퍼 삭제
-		vkDestroyBuffer(device, stagingBuffer, nullptr);
-		vkFreeMemory(device, stagingBufferMemory, nullptr);
-
-		// mipmap 생성
-        generateMipmaps(textureImage, VK_FORMAT_R8G8B8A8_SRGB, texWidth, texHeight, mipLevels);
-	}
-
-	void generateMipmaps(VkImage image, VkFormat imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels) {
-		// 이미지 포맷이 선형 필터링을 사용한 Blit 작업을 지원하는지 확인
-		VkFormatProperties formatProperties;
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, imageFormat, &formatProperties);
-
-		if (!(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
-			throw std::runtime_error("texture image format does not support linear blitting!");
-		}
-
-		// 커맨드 버퍼 생성 및 기록 시작
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-
-		// 베리어 생성
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.image = image;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.baseArrayLayer = 0;
-		barrier.subresourceRange.layerCount = 1;
-		barrier.subresourceRange.levelCount = 1;
-
-		int32_t mipWidth = texWidth;
-		int32_t mipHeight = texHeight;
-
-		// miplevel 0 ~ mipLevels
-		for (uint32_t i = 1; i < mipLevels; i++) {
-			barrier.subresourceRange.baseMipLevel = i - 1;								// 해당 mipmap에 대한 barrier 설정
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;					// 데이터 쓰기에 적합한 레이아웃
-			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;					// 데이터 읽기에 적합한 레이아웃
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;						// 쓰기 권한 on
-			barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;						// 읽기 권한 on
-
-			// 파이프라인 베리어 설정 (GPU 특정 작업간의 동기화 설정)
-			// 이전 단계의 mipmap 복사가 끝나야, 다음 단계 mipmap 복사가 시작되게 베리어 설정
-			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-				0, nullptr,
-				0, nullptr,
-				1, &barrier);
-
-			// blit 작업시 소스와 대상의 복사 범위를 지정하는 구조체
-			VkImageBlit blit{};
-			blit.srcOffsets[0] = {0, 0, 0};
-			blit.srcOffsets[1] = {mipWidth, mipHeight, 1};														// 소스의 범위 설정
-			blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			blit.srcSubresource.mipLevel = i - 1;																// 소스의 mipLevel 설정
-			blit.srcSubresource.baseArrayLayer = 0;
-			blit.srcSubresource.layerCount = 1;
-			blit.dstOffsets[0] = {0, 0, 0};
-			blit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };		// 대상의 범위 설정
-			blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			blit.dstSubresource.mipLevel = i;																	// 대상의 mipLevel 설정
-			blit.dstSubresource.baseArrayLayer = 0;
-			blit.dstSubresource.layerCount = 1;
-
-			// 소스 miplevel 을 대상 miplevel로 설정에 맞게 복사
-			vkCmdBlitImage(commandBuffer,
-				image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-				image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				1, &blit,
-				VK_FILTER_LINEAR); // 선형적으로 복사
-
-			// shader 단계에서 사용하기 전에 Bllit 단계가 끝나기를 기다림
-			barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-			barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-			vkCmdPipelineBarrier(commandBuffer,
-				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-				0, nullptr,
-				0, nullptr,
-				1, &barrier);
-
-			if (mipWidth > 1) mipWidth /= 2;
-			if (mipHeight > 1) mipHeight /= 2;
-		}
-
-		// 마지막 단계 miplevel 처리
-		barrier.subresourceRange.baseMipLevel = mipLevels - 1;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-		vkCmdPipelineBarrier(commandBuffer,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-			0, nullptr,
-			0, nullptr,
-			1, &barrier);
-
-		endSingleTimeCommands(commandBuffer);
-	}
-
-	// GPU 에서 지원하는 최대 샘플 개수 반환
-	VkSampleCountFlagBits getMaxUsableSampleCount() {
-		VkPhysicalDeviceProperties physicalDeviceProperties;
-		vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
-
-		// GPU가 지원하는 color 샘플링 개수와 depth 샘플링 개수의 공통 분모를 찾음
-		VkSampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
-
-		// 가장 높은 샘플링 개수부터 확인하면서 반환
-		if (counts & VK_SAMPLE_COUNT_64_BIT) { return VK_SAMPLE_COUNT_64_BIT; }
-		if (counts & VK_SAMPLE_COUNT_32_BIT) { return VK_SAMPLE_COUNT_32_BIT; }
-		if (counts & VK_SAMPLE_COUNT_16_BIT) { return VK_SAMPLE_COUNT_16_BIT; }
-		if (counts & VK_SAMPLE_COUNT_8_BIT) { return VK_SAMPLE_COUNT_8_BIT; }
-		if (counts & VK_SAMPLE_COUNT_4_BIT) { return VK_SAMPLE_COUNT_4_BIT; }
-		if (counts & VK_SAMPLE_COUNT_2_BIT) { return VK_SAMPLE_COUNT_2_BIT; }
-
-		return VK_SAMPLE_COUNT_1_BIT;
-	}
-
-	// 텍스처 이미지 뷰 생성
-	void createTextureImageView() {
-		// SRGB 총 4바이트 포맷으로 된 이미지 뷰 생성
-		textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels);
-	}
-
-	// 텍스처를 위한 샘플러 생성 함수
-	void createTextureSampler() {
-		// GPU의 속성 정보를 가져오는 함수
-		VkPhysicalDeviceProperties properties{};
-		vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-
-		// 샘플러 생성시 필요한 구조체 
-		VkSamplerCreateInfo samplerInfo{};
-		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		samplerInfo.magFilter = VK_FILTER_LINEAR;							// 확대시 필터링 적용 설정 (현재 선형 보간 필터링 적용)
-		samplerInfo.minFilter = VK_FILTER_LINEAR;							// 축소시 필터링 적용 설정 (현재 선형 보간 필터링 적용)
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;			// 텍스처 좌표계의 U축(너비)에서 범위를 벗어난 경우 래핑 모드 설정 (현재 반복 설정) 
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;			// 텍스처 좌표계의 V축(높이)에서 범위를 벗어난 경우 래핑 모드 설정 (현재 반복 설정) 
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;			// 텍스처 좌표계의 W축(깊이)에서 범위를 벗어난 경우 래핑 모드 설정 (현재 반복 설정) 
-		samplerInfo.anisotropyEnable = VK_TRUE;								// 이방성 필터링 적용 여부 설정 (경사진 곳이나 먼 곳의 샘플을 늘려 좀 더 정확한 값을 가져오는 방법)
-		samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;	// GPU가 지원하는 최대의 이방성 필터링 제한 설정
-		samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;			// 래핑 모드가 VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER 일때 텍스처 외부 색 지정
-		samplerInfo.unnormalizedCoordinates = VK_FALSE;						// VK_TRUE로 설정시 텍스처 좌표가 0 ~ 1의 정규화된 좌표가 아닌 실제 텍셀의 좌표 범위로 바뀜
-		samplerInfo.compareEnable = VK_FALSE;								// 비교 연산 사용할지 결정 (보통 쉐도우 맵같은 경우 깊이 비교 샘플링에서 사용됨)
-		samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;						// 비교 연산에 사용할 연산 지정
-		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;				// mipmap 사용시 mipmap 간 보간 방식 결정 (현재 선형 보간)
-		samplerInfo.minLod = 0.0f;											// 최소 level을 0으로 설정 (가장 높은 해상도의 mipmap 을 사용가능하게 허용)
-		samplerInfo.maxLod = static_cast<float>(mipLevels);					// 최대 level을 mipLevel로 설정 (VK_LOD_CLAMP_NONE 설정시 제한 해제)
-		samplerInfo.mipLodBias = 0.0f;										// Mipmap 레벨 오프셋(Bias)을 설정 
-																			// Mipmap을 일부러 더 높은(더 큰) 레벨로 사용하거나 낮은(더 작은) 레벨로 사용하고 싶을 때 사용.
-
-		// 샘플러 생성
-		if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create texture sampler!");
-		}
-	}
-
-	// .obj 파일을 읽고 vertices, indices 채우기
-	void loadModel() {
-		Assimp::Importer importer;
-		// scene 구조체 받아오기
-		auto scene = importer.ReadFile(MODEL_PATH, aiProcess_Triangulate | aiProcess_FlipUVs);
-
-		// scene load 오류 처리
-		if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
-		{
-			throw std::runtime_error("failed to load obj file!");
-		}
-		// node 데이터 처리
-		processNode(scene->mRootNode, scene);
-	}
-
-	// node에 포함된 mesh들의 데이터 처리
-	void processNode(aiNode *node, const aiScene *scene)
-	{
-		// node에 포함된 mesh들 순회
-		for (uint32_t i = 0; i < node->mNumMeshes; i++)
-		{
-			// 현재 처리할 mesh 찾기
-			auto meshIndex = node->mMeshes[i];
-			auto mesh = scene->mMeshes[meshIndex];
-			// 현재 mesh 데이터 처리
-			processMesh(mesh, scene);
-		}
-
-		// 자식 노드 처리
-		for (uint32_t i = 0; i < node->mNumChildren; i++)
-			processNode(node->mChildren[i], scene);
-	}
-
-	// mesh의 vetex, index 데이터 처리
-	void processMesh(aiMesh *mesh, const aiScene *scene)
-	{
-		// mesh의 vertex 정보 저장
-		vertices.resize(mesh->mNumVertices);
-		for (uint32_t i = 0; i < mesh->mNumVertices; i++)
-		{
-			Vertex& v = vertices[i];
-			v.pos = glm::vec3(mesh->mVertices[i].x, mesh->mVertices[i].y, mesh->mVertices[i].z);
-			v.texCoord = glm::vec2(mesh->mTextureCoords[0][i].x, mesh->mTextureCoords[0][i].y);
-			v.color = {1.0f, 1.0f, 1.0f};
-		}
-
-		// mesh의 index 정보 저장
-		indices.resize(mesh->mNumFaces * 3);
-		// face의 개수 = triangle 개수
-		for (uint32_t i = 0; i < mesh->mNumFaces; i++)
-		{
-			indices[3 * i] = mesh->mFaces[i].mIndices[0];
-			indices[3 * i + 1] = mesh->mFaces[i].mIndices[1];
-			indices[3 * i + 2] = mesh->mFaces[i].mIndices[2];
-		}
-	}
-
-	// 이미지 뷰 생성
-	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevels) {
-		// 이미지 뷰 정보 생성
-		VkImageViewCreateInfo viewInfo{};
-		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = image;													// 이미지 핸들
-		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;								// 이미지 타입
-		viewInfo.format = format;												// 이미지 포맷
-		viewInfo.subresourceRange.aspectMask = aspectFlags;  					// 이미지 형식 결정 (color / depth / stencil 등)
-		viewInfo.subresourceRange.baseMipLevel = 0;                          	// 렌더링할 mipmap 단계 설정
-		viewInfo.subresourceRange.levelCount = mipLevels;                            	// baseMipLevel 기준으로 몇 개의 MipLevel을 더 사용할지 설정 (실제 mipmap 만드는 건 따로 해줘야함)
-		viewInfo.subresourceRange.baseArrayLayer = 0;                        	// ImageView가 참조하는 이미지 레이어의 시작 위치 정의
-		viewInfo.subresourceRange.layerCount = 1;                            	// 스왑 체인에서 설정한 이미지 레이어 개수
-
-		// 이미지 뷰 생성
-		VkImageView imageView;
-		if (vkCreateImageView(device, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create image view!");
-		}
-
-		return imageView;
-	}
-
-	/*
-		[이미지 객체 생성 및 메모리 할당]
-		1. 이미지 객체 생성
-		2. 이미지 객체가 사용할 메모리 할당
-		3. 이미지 객체에 할당한 메모리 바인딩
-	*/
-	void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, VkSampleCountFlagBits numSamples, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
-		// 이미지 객체를 만드는데 사용되는 구조체
-		VkImageCreateInfo imageInfo{};
-		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		imageInfo.imageType = VK_IMAGE_TYPE_2D;					// 이미지의 차원을 설정
-		imageInfo.extent.width = width;							// 이미지의 너비 지정
-		imageInfo.extent.height = height;						// 이미지의 높이 지정 
-		imageInfo.extent.depth = 1;								// 이미지의 깊이 지정 (2D 이미지의 경우 depth는 1로 지정해야 함)
-		imageInfo.mipLevels = mipLevels;						// 생성할 mipLevel의 개수 지정
-		imageInfo.arrayLayers = 1;								// 생성할 이미지 레이어 수 (큐브맵의 경우 6개 생성)
-		imageInfo.format = format;								// 이미지의 포맷을 지정하며, 채널 구성과 각 채널의 비트 수를 정의
-		imageInfo.tiling = tiling;								// 이미지를 GPU 메모리에 배치할 때 메모리 레이아웃을 결정하는 설정 (CPU에서도 접근 가능하게 할꺼냐, GPU에만 접근 가능하게 최적화 할거냐 결정) 
-		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;	// 이미지 초기 레이아웃 설정 (이미지가 메모리에 배치될 때 초기 상태를 정의)
-		imageInfo.usage = usage;								// 이미지의 사용 용도 결정
-		imageInfo.samples = numSamples;							// 멀티 샘플링을 위한 샘플 개수
-		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;		// 이미지의 큐 공유 모드 설정 (VK_SHARING_MODE_EXCLUSIVE: 한 번에 하나의 큐 패밀리에서만 접근 가능한 단일 큐 모드)
-
-		// 이미지 객체 생성
-		if (vkCreateImage(device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create image!");
-		}
-
-		// 이미지에 필요한 메모리 요구 사항을 조회 
-		VkMemoryRequirements memRequirements;
-		vkGetImageMemoryRequirements(device, image, &memRequirements);
-
-		// 메모리 할당을 위한 구조체
-		VkMemoryAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memRequirements.size;											// 메모리 크기 설정
-		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);		// 메모리 유형과 속성 설정
-
-		// 이미지를 위한 메모리 할당
-		if (vkAllocateMemory(device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate image memory!");
-		}
-
-		// 이미지에 할당한 메모리 바인딩
-		vkBindImageMemory(device, image, imageMemory, 0);
-	}
-
-	// 이미지 레이아웃, 접근 권한을 변경할 수 있는 베리어를 커맨드 버퍼에 기록
-	void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();			// 커맨드 버퍼 생성 및 기록 시작
-
-		// 베리어 생성을 위한 구조체
-		VkImageMemoryBarrier barrier{};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.oldLayout = oldLayout;										// src 단계까지의 이미지 레이아웃
-		barrier.newLayout = newLayout;										// src 단계 이후 적용시킬 새로운 이미지 레이아웃
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;				// 베리어 전환 적용 후 리소스 소유권을 넘겨줄 src 큐 패밀리 (현재는 동일 큐 패밀리에서 실행)
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;				// 리소스 소유권을 받을 dst 큐 패밀리로 dst 큐패밀리에는 큐 전체에 동기화가 적용 (현재는 동일 큐 패밀리에서 실행)
-		barrier.image = image;												// 배리어 적용할 이미지 객체
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;	// 전환 작업의 적용 대상을 color bit 으로 설정
-		barrier.subresourceRange.baseMipLevel = 0;							// 전환 작업을 시작할 miplevel
-		barrier.subresourceRange.levelCount = mipLevels;					// 전환 작업을 적용할 miplevel의 개수
-		barrier.subresourceRange.baseArrayLayer = 0;						// 전환 작업을 시작할 레이어 인덱스
-		barrier.subresourceRange.layerCount = 1;							// 전환 작업을 적용할 레이어 개수
-
-		VkPipelineStageFlags sourceStage;									// 파이프라인의 sourceStage 단계가 끝나면 배리어 전환 실행 
-		VkPipelineStageFlags destinationStage;								// destinationStage 단계는 배리어 전환이 끝날때까지 대기
-
-		if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-			// 이미지 복사 전에 이미지 레이아웃, 접근 권한 변경
-			barrier.srcAccessMask = 0;									// 접근 제한 x
-			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;		// 쓰기 권한 필요
-
-			sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;			// Vulkan의 파이프라인에서 가장 상단에 위치한 첫 번째 단계로, 어떠한 작업도 진행되지 않은 상태
-			destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;			// 데이터 복사 단계
-		} else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-			// 이미지 복사가 완료되고 읽기를 수행하기 위해 Fragment shader 작업 대기
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;		// 쓰기 권한 필요
-			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;			// 읽기 권한 필요
-
-			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;				// 데이터 복사 단계
-			destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;	// Fragment shader 단계
-		} else {
-			throw std::invalid_argument("unsupported layout transition!");
-		}
-
-		// 베리어를 커맨드 버퍼에 기록
-		vkCmdPipelineBarrier(
-			commandBuffer,						// 베리어를 기록할 커맨드 버퍼
-			sourceStage, destinationStage,		// sourceStage 단계가 끝나면 베리어 작업 시작, 베리어 작업이 끝나기 전에 destinationStage에 돌입한 다른 작업들 모두 대기
-			0,									// 의존성 플래그
-			0, nullptr,							// 메모리 베리어 (개수 + 베리어 포인터)
-			0, nullptr,							// 버퍼 베리어   (개수 + 베리어 포인터)
-			1, &barrier							// 이미지 베리어 (개수 + 베리어 포인터)
-		);
-
-		endSingleTimeCommands(commandBuffer);	// 커맨드 버퍼 기록 종료
-	}
-
-	// 커맨드 버퍼 제출을 통해 버퍼 -> 이미지 데이터 복사 
-	void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height) {
-		// 커맨드 버퍼 생성 및 기록 시작
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-
-		// 버퍼 -> 이미지 복사를 위한 정보
-		VkBufferImageCopy region{};
-		region.bufferOffset = 0;											// 복사할 버퍼의 시작 위치 offset
-		region.bufferRowLength = 0;											// 저장될 공간의 row 당 픽셀 수 (0으로 하면 이미지 너비에 자동으로 맞춰진다.)
-		region.bufferImageHeight = 0;										// 저장될 공간의 col 당 픽셀 수 (0으로 하면 이미지 높이에 자동으로 맞춰진다.)
-		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;		// 이미지의 데이터 타입 (현재는 컬러값을 복사)
-		region.imageSubresource.mipLevel = 0;								// 이미지의 miplevel 설정
-		region.imageSubresource.baseArrayLayer = 0;							// 이미지의 시작 layer 설정 (cubemap과 같은 경우 여러 레이어 존재)
-		region.imageSubresource.layerCount = 1;								// 이미지 layer 개수
-		region.imageOffset = {0, 0, 0};										// 이미지의 저장할 시작 위치
-		region.imageExtent = {												// 이미지의 저장할 너비, 높이, 깊이
-			width,
-			height,
-			1
-		};
-
-		// 커맨드 버퍼에 버퍼 -> 이미지로 데이터 복사하는 명령 기록
-		vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-		// 커맨드 버퍼 기록 종료 및 제출
-		endSingleTimeCommands(commandBuffer);
-	}
-
-	/*
-		[버텍스 버퍼 생성]
-		1. 스테이징 버퍼 생성
-		2. 스테이징 버퍼에 정점 정보 복사
-		3. 버텍스 버퍼 생성
-		4. 스테이징 버퍼의 정점 정보를 버텍스 버퍼에 복사
-		5. 스테이징 버퍼 리소스 해제
-	*/ 
-	void createVertexBuffer() {
-		// 정점 정보 크기		
-		VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
-
-		// 스테이징 버퍼 객체, 스테이징 버퍼 메모리 객체 생성
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-
-		// [스테이징 버퍼 생성]
-		// 용도)
-		//		VK_BUFFER_USAGE_TRANSFER_SRC_BIT : 데이터 전송의 소스로 사용
-		// 속성)
-		// 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  : CPU에서 GPU 메모리에 접근이 가능한 설정
-		// 		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : CPU에서 GPU 메모리의 값을 수정하면 그 즉시 GPU 메모리와 캐시에 해당 값을 수정하는 설정 
-		//      									  (원래는 CPU에서 GPU 메모리 값을 수정하면 GPU 캐시를 플러쉬하여 다시 캐시에 값을 올리는 형식으로 동작)
-		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
-
-		// [스테이징 버퍼(GPU 메모리)에 정점 정보 입력]
-		void* data; // GPU 메모리에 매핑될 CPU 메모리 가상 포인터
-		vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data); 	// GPU 메모리에 매핑된 CPU 메모리 포인터 반환 (현재는 버텍스 버퍼 메모리 전부를 매핑)
-		memcpy(data, vertices.data(), (size_t) bufferSize);					// CPU 메모리 포인터는 가상포인터로 data에 정점 정보를 복사하면 GPU에 즉시 반영
-																			// 실제 CPU 메모리에 저장되는게 아닌 CPU 메모리 포인터는 가상 포인터역할만 하고 GPU 메모리에 바로 저장
-																			// 메모리 유형의 속성에 의해 GPU 캐시를 플러쉬할 필요없이 즉시 적용
-																			// VK_MEMORY_PROPERTY_HOST_COHERENT_BIT 속성 덕분
-																			// 만약 해당 속성 없이 플러쉬도 안 하면 GPU에서 변경사항이 바로 적용되지 않음
-		vkUnmapMemory(device, stagingBufferMemory);							// GPU 메모리 매핑 해제
-
-
-		// [버텍스 버퍼 생성]
-		// 용도)
-		//		VK_BUFFER_USAGE_TRANSFER_DST_BIT : 데이터 전송의 대상으로 사용
-		// 속성)
-		// 		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT : 버퍼를 정점 데이터를 저장하고 처리하는 용도로 설정.
-		// 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : GPU 전용 메모리에 데이터를 저장하여, GPU가 최적화된 방식으로 접근할 수 있게 함.
-		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vertexBuffer, vertexBufferMemory);
-
-		// [스테이징 버퍼에서 버텍스 버퍼로 메모리 이동]
-		copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
-
-		// 스테이징 버퍼와 할당된 메모리 해제
-		vkDestroyBuffer(device, stagingBuffer, nullptr);
-		vkFreeMemory(device, stagingBufferMemory, nullptr);
-	}
-
-	/*
-		[인덱스 버퍼 생성]
-		버텍스 버퍼 생성 과정과 같음
-	*/
-	void createIndexBuffer() {
-		VkDeviceSize bufferSize = sizeof(indices[0]) * indices.size();
-
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingBufferMemory;
-		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stagingBuffer, stagingBufferMemory);
-
-		void* data;
-		vkMapMemory(device, stagingBufferMemory, 0, bufferSize, 0, &data);
-		memcpy(data, indices.data(), (size_t) bufferSize);
-		vkUnmapMemory(device, stagingBufferMemory);
-
-		// [버텍스 버퍼 생성]
-		// 속성)
-		// 		VK_BUFFER_USAGE_INDEX_BUFFER_BIT : 버퍼를 인덱스 데이터를 저장하고 처리하는 용도로 설정.
-		// 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : GPU 전용 메모리에 데이터를 저장하여, GPU가 최적화된 방식으로 접근할 수 있게 함.
-		createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, indexBuffer, indexBufferMemory);
-
-		copyBuffer(stagingBuffer, indexBuffer, bufferSize);
-
-		vkDestroyBuffer(device, stagingBuffer, nullptr);
-		vkFreeMemory(device, stagingBufferMemory, nullptr);
-	}
-
-	// // 유니폼 버퍼 생성
-	// void createUniformBuffers() {
-	// 	// 유니폼 버퍼에 저장 될 구조체의 크기
-	// 	VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-
-	// 	// 각 요소들을 동시에 처리 가능한 최대 프레임 수만큼 만들어 둔다.
-	// 	uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT * 2);		// 유니폼 버퍼 객체
-	// 	uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT * 2);	// 유니폼 버퍼에 할당할 메모리
-	// 	uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT * 2);	// GPU 메모리에 매핑할 CPU 메모리 포인터
-
-	// 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-	// 		// 유니폼 버퍼 객체 생성 + 메모리 할당 + 바인딩
-	// 		createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i], uniformBuffersMemory[i]);
-	// 		// GPU 메모리 CPU 가상 포인터에 매핑
-	// 		vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize, 0, &uniformBuffersMapped[i]);
-	// 	}
-	// }
-
 	// 디스크립터 풀 생성
 	void createDescriptorPool() {
 		size_t MAX_OBJECTS = 1000;
@@ -3467,177 +2848,6 @@ private:
 		if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create descriptor pool!");
 		}
-	}
-
-	// // 디스크립터 셋 할당 및 업데이트 하여 리소스 바인딩
-	// void createDescriptorSets() {
-	// 	// 디스크립터 셋 레이아웃 벡터 생성 (기존 만들어놨던 디스크립터 셋 레이아웃 객체 이용)
-	// 	std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
-
-	// 	// 디스크립터 셋 할당에 필요한 정보를 설정하는 구조체
-	// 	VkDescriptorSetAllocateInfo allocInfo{};
-	// 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	// 	allocInfo.descriptorPool = descriptorPool;										// 디스크립터 셋을 할당할 디스크립터 풀 지정
-	// 	allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);		// 할당할 디스크립터 셋 개수 지정
-	// 	allocInfo.pSetLayouts = layouts.data();											// 할당할 디스크립터 셋 의 레이아웃을 정의하는 배열 
-
-	// 	descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);									// 디스크립터 셋을 저장할 벡터 크기 설정
-		
-	// 	// 디스크립터 풀에 디스크립터 셋 할당
-	// 	if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) {
-	// 		throw std::runtime_error("failed to allocate descriptor sets!");
-	// 	}
-
-	// 	// 디스크립터 셋마다 디스크립터 설정 진행
-	// 	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-	// 		// 디스크립터 셋에 바인딩할 버퍼 정보 
-	// 		VkDescriptorBufferInfo bufferInfo{};
-	// 		bufferInfo.buffer = uniformBuffers[i];								// 바인딩할 버퍼
-	// 		bufferInfo.offset = 0;												// 버퍼에서 데이터 시작 위치 offset
-	// 		bufferInfo.range = sizeof(UniformBufferObject);						// 셰이더가 접근할 버퍼 크기
-
-    //         VkDescriptorImageInfo imageInfo{};								
-    //         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// 이미지의 레이아웃
-    //         imageInfo.imageView = textureImageView;								// 셰이더에서 사용할 이미지 뷰
-    //         imageInfo.sampler = textureSampler;									// 이미지 샘플링에 사용할 샘플러 설정
-
-	// 		// 디스크립터 셋 바인딩 및 업데이트
-	// 		std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
-
-	// 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	// 		descriptorWrites[0].dstSet = descriptorSets[i];										// 업데이트 할 디스크립터 셋
-	// 		descriptorWrites[0].dstBinding = 0;													// 업데이트 할 바인딩 포인트
-	// 		descriptorWrites[0].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
-	// 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;				// 업데이트 할 디스크립터 타입
-	// 		descriptorWrites[0].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
-	// 		descriptorWrites[0].pBufferInfo = &bufferInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열
-
-	// 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	// 		descriptorWrites[1].dstSet = descriptorSets[i];										// 업데이트 할 디스크립터 셋
-	// 		descriptorWrites[1].dstBinding = 1;													// 업데이트 할 바인딩 포인트
-	// 		descriptorWrites[1].dstArrayElement = 0;											// 업데이트 할 디스크립터가 배열 타입인 경우 해당 배열의 원하는 index 부터 업데이트 가능 (배열 아니면 0으로 지정)
-	// 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;		// 업데이트 할 디스크립터 타입
-	// 		descriptorWrites[1].descriptorCount = 1;											// 업데이트 할 디스크립터 개수
-	// 		descriptorWrites[1].pImageInfo = &imageInfo;										// 업데이트 할 버퍼 디스크립터 정보 구조체 배열	
-
-	// 		// 디스크립터 셋을 업데이트 하여 사용할 리소스 바인딩
-    //         vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
-	// 	}
-	// }
-
-	/*
-		[버퍼 생성]
-		1. 버퍼 객체 생성
-		2. 버퍼 메모리 할당
-		3. 버퍼 객체에 할당한 메모리 바인딩
-	*/ 
-	void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
-		// 버퍼 객체를 생성하기 위한 구조체 (GPU 메모리에 데이터 저장 공간을 할당하는 데 필요한 설정을 정의)
-		VkBufferCreateInfo bufferInfo{};
-		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		bufferInfo.size = size;										// 버퍼의 크기 지정
-		bufferInfo.usage = usage;									// 버퍼의 용도 지정
-		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;			// 버퍼를 하나의 큐 패밀리에서 쓸지, 여러 큐 패밀리에서 공유할지 설정 (현재 단일 큐 패밀리에서 사용하도록 설정)
-																	// 여러 큐 패밀리에서 공유하는 모드 사용시 추가 설정 필요
-		// [버퍼 생성]
-		// 버퍼를 생성하지만 할당은 안되어있는 상태로 만들어짐       
-		if (vkCreateBuffer(device, &bufferInfo, nullptr, &buffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create buffer!");
-		}
-
-		// [버퍼에 메모리 할당]
-		// 메모리 할당 요구사항 조회
-		VkMemoryRequirements memRequirements;
-		vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
-
-		// 메모리 할당을 위한 구조체
-		VkMemoryAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memRequirements.size;	// 할당할 메모리 크기
-		// 메모리 요구사항 설정 (GPU 메모리 유형 중 buffer와 호환되고 properties 속성들과 일치하는 것 찾아 저장)
-		// 메모리 유형 - GPU 메모리는 구역마다 유형이 다르다. (memoryTypeBits는 buffer가 호환되는 GPU의 메모리 유형이 전부 담겨있음)
-		// 메모리 유형의 속성 - 메모리 유형마다 특성을 가지고 있음
-		allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
-
-		// 버퍼 메모리 할당
-		if (vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate buffer memory!");
-		}
-
-		// 버퍼 객체에 할당된 메모리를 바인딩 (4번째 매개변수는 할당할 메모리의 offset)
-		vkBindBufferMemory(device, buffer, bufferMemory, 0);
-	}
-
-	// 한 번만 실행할 커맨드 버퍼 생성 및 기록 시작
-	VkCommandBuffer beginSingleTimeCommands() {
-		// 커맨드 버퍼 할당을 위한 구조체 
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;		// PRIMARY LEVEL 등록 (해당 커맨드 버퍼가 큐에 단독으로 제출될 수 있음)
-		allocInfo.commandPool = commandPool;					// 커맨드 풀 지정
-		allocInfo.commandBufferCount = 1;						// 커맨드 버퍼 개수 지정
-
-		// 커맨드 버퍼 생성
-		VkCommandBuffer commandBuffer;
-		vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-		// 커맨드 버퍼 기록을 위한 정보 객체
-		VkCommandBufferBeginInfo beginInfo{};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;  // 커맨드 버퍼를 1번만 제출
-
-		// GPU에 필요한 작업을 모두 커맨드 버퍼에 기록하기 시작
-		vkBeginCommandBuffer(commandBuffer, &beginInfo);
-
-		return commandBuffer;
-	}
-
-	// 한 번만 실행할 커맨드 버퍼 기록 중지 및 큐에 커맨드 버퍼 제출
-	void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
-		// 커맨드 버퍼 기록 중지
-		vkEndCommandBuffer(commandBuffer);
-
-		// 복사 커맨드 버퍼 제출 정보 객체 생성
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		submitInfo.commandBufferCount = 1;								// 커맨드 버퍼 개수
-		submitInfo.pCommandBuffers = &commandBuffer;					// 커맨드 버퍼 등록
-
-		vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);	// 커맨드 버퍼 큐에 제출
-		vkQueueWaitIdle(graphicsQueue);									// 그래픽스 큐 작업 종료 대기
-
-		vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);	// 커맨드 버퍼 제거
-	}
-
-	// srcBuffer 에서 dstBuffer 로 데이터 복사
-	void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
-		VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-
-		VkBufferCopy copyRegion{}; 	// 복사할 버퍼 영역을 지정 (크기, src 와 dst의 시작 offset 등)
-		copyRegion.size = size;		// 복사할 버퍼 크기 설정
-		vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion); // 커맨드 버퍼에 복사 명령 기록
-
-        endSingleTimeCommands(commandBuffer);		
-	}
-
-	/*
-		GPU와 buffer가 호환되는 메모리 유형중 properties에 해당하는 속성들을 갖는 메모리 유형 찾기
-	*/
-	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
-		// GPU에서 사용한 메모리 유형을 가져온다.
-		VkPhysicalDeviceMemoryProperties memProperties;
-		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
-			// typeFilter & (1 << i) : GPU의 메모리 유형중 버퍼와 호환되는 것인지 판단
-			// memProperties.memoryTypes[i].propertyFlags & properties : GPU 메모리 유형의 속성이 properties와 일치하는지 판단
-			if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
-				// 해당 메모리 유형 반환
-				return i;
-			}
-		}
-
-		throw std::runtime_error("failed to find suitable memory type!");
 	}
 
 	/*
@@ -3729,16 +2939,6 @@ private:
 		// [렌더링 명령 기록]
 		const std::vector<std::shared_ptr<Object>>& objects = scene->getObjects();
 		size_t objectCount = scene->getObjectCount();
-		// for (size_t i = 0; i < objectCount; i++) {
-		// 	vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame * objectCount + i], 0, nullptr);
-		// 	UniformBufferObject ubo{};
-		// 	ubo.model = objects[i]->getModelMatrix();
-		// 	ubo.view = scene->getViewMatrix();
-		// 	ubo.proj = scene->getProjMatrix(swapChainExtent);
-		// 	ubo.proj[1][1] *= -1;
-		// 	memcpy(uniformBuffersMapped[currentFrame * objectCount + i], &ubo, sizeof(ubo));
-		// 	objects[i]->draw(commandBuffer);
-		// }
 
 		for (size_t i = 0; i < objectCount; i++) {
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[MAX_FRAMES_IN_FLIGHT * i + currentFrame], 0, nullptr);
@@ -3797,25 +2997,6 @@ private:
 		}
 	}
 
-	// Uniform 변수에 해당하는 값을 구한 후 매핑된 GPU 메모리에 복사
-    void updateUniformBuffer(uint32_t currentImage) {
-        static auto startTime = std::chrono::high_resolution_clock::now();
-
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
-
-		// 이번 프레임의 유니폼 변수 값 구하기
-		// 1초에 90도씩 회전하는 model view projection 변환 생성
-        UniformBufferObject ubo{};
-        ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-        ubo.proj = glm::perspective(glm::radians(45.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
-        ubo.proj[1][1] *= -1;
-
-		// 유니폼 변수를 매핑된 GPU 메모리에 복사
-        memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
-    }
-
 	/*
 	매개변수로 받은 쉐이더 파일을 shader module로 만들어 줌
 	shader module은 쉐이더 파일을 객체화 한 것임
@@ -3833,219 +3014,6 @@ private:
 		}
 
 		return shaderModule;
-	}
-
-	/* 
-	지원하는 포맷중 선호하는 포맷 1개 반환
-	선호하는 포맷이 없을 시 가장 앞에 있는 포맷 반환
-	*/
-	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
-		for (const auto& availableFormat : availableFormats) {
-			// 만약 선호하는 포맷이 존재할 경우 그 포맷을 반환
-			if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
-				availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-				return availableFormat;
-			}
-		}
-		// 선호하는 포맷이 없는 경우 첫 번째 포맷 반환
-		return availableFormats[0];
-	}
-
-	/*
-	지원하는 프레젠테이션 모드 중 선호하는 모드 선택
-	선호하는 모드가 없을 시 기본 값인 VK_PRESENT_MODE_FIFO_KHR 반환
-	*/
-	VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes) {
-		for (const auto& availablePresentMode : availablePresentModes) {
-			// 선호하는 mode가 존재하면 해당 mode 반환 
-			if (availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR) {
-				return availablePresentMode;
-			}
-		}
-		// 선호하는 mode가 존재하지 않으면 기본 값인 VK_PRESENT_MODE_FIFO_KHR 반환
-		return VK_PRESENT_MODE_FIFO_KHR;
-	}
-
-	// 스왑 체인 이미지의 해상도 결정
-	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities) {
-		// 만약 currentExtent의 width가 std::numeric_limits<uint32_t>::max()가 아니면, 시스템이 이미 권장하는 스왑체인 크기를 제공하는 것
-		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
-			return capabilities.currentExtent; // 권장 사항 사용
-		} else {
-			// 그렇지 않은 경우, 창의 현재 프레임 버퍼 크기를 사용하여 스왑체인 크기를 결정
-			int width, height;
-			glfwGetFramebufferSize(window, &width, &height);
-
-			VkExtent2D actualExtent = {
-				static_cast<uint32_t>(width),
-				static_cast<uint32_t>(height)
-			};
-
-			// width, height를 capabilites의 min, max 범위로 clamping
-			actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
-			actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
-
-			return actualExtent;
-		}
-	}
-	
-	// GPU와 surface가 호환하는 SwapChain 정보를 반환
-	SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device) {
-		SwapChainSupportDetails details;
-
-		// GPU와 surface가 호환할 수 있는 capability 정보 쿼리
-		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
-
-		// device에서 surface 객체를 지원하는 format이 존재하는지 확인 
-		uint32_t formatCount;
-		vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
-
-		if (formatCount != 0) {
-			details.formats.resize(formatCount);
-			vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
-		}
-
-		// device에서 surface 객체를 지원하는 presentMode가 있는지 확인 
-		uint32_t presentModeCount;
-		vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
-
-		if (presentModeCount != 0) {
-			details.presentModes.resize(presentModeCount);
-			vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data());
-		}
-
-		return details;
-	}
-
-	// 그래픽, 프레젠테이션 큐 패밀리가 존재하는지, GPU와 surface가 호환하는 SwapChain이 존재하는지 검사
-	bool isDeviceSuitable(VkPhysicalDevice device) {
-		// 큐 패밀리 확인
-		QueueFamilyIndices indices = findQueueFamilies(device);
-		
-		// 스왑 체인 확장을 지원하는지 확인
-		bool extensionsSupported = checkDeviceExtensionSupport(device);
-		bool swapChainAdequate = false;
-
-		// 스왑 체인 확장이 존재하는 경우
-		if (extensionsSupported) {
-			// 물리 디바이스와 surface가 호환하는 SwapChain 정보를 가져옴
-			SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device);
-			// GPU와 surface가 지원하는 format과 presentMode가 존재하면 통과
-			swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
-		}
-
-		// GPU 에서 이방성 필터링을 지원하는지 확인
-        VkPhysicalDeviceFeatures supportedFeatures;
-        vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
-
-		return indices.isComplete() && extensionsSupported && swapChainAdequate && supportedFeatures.samplerAnisotropy;
-	}
-
-	// 디바이스가 지원하는 확장 중 
-	bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
-		uint32_t extensionCount;
-		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
-
-		std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-		vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
-
-		// 스왑 체인 확장이 존재하는지 확인
-		std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
-		for (const auto& extension : availableExtensions) {
-			// 지원 가능한 확장들 목록을 순회하며 제거
-			requiredExtensions.erase(extension.extensionName);
-		}
-
-		// 만약 기존에 있던 확장이 제거되면 true
-		// 기존에 있던 확장이 그대로면 지원을 안 하는 것이므로 false
-		return requiredExtensions.empty();
-	}
-
-	/*
-	GPU가 지원하는 큐패밀리 인덱스 가져오기
-	그래픽스 큐패밀리, 프레젠테이션 큐패밀리 인덱스를 저장
-	해당 큐패밀리가 없으면 optional 객체에 정보가 empty 상태
-	*/
-	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
-		QueueFamilyIndices indices;
-
-		// GPU가 지원하는 큐 패밀리 개수 가져오기
-		uint32_t queueFamilyCount = 0;
-		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
-
-		// GPU가 지원하는 큐 패밀리 리스트 가져오기
-		std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-		vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
-
-		// 그래픽 큐 패밀리 검색
-		int i = 0;
-		for (const auto& queueFamily : queueFamilies) {
-			// 그래픽 큐 패밀리 찾기 성공한 경우 indices에 값 생성
-			if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-				indices.graphicsFamily = i;
-			}
-
-			// GPU의 i 인덱스 큐 패밀리가 surface에서 프레젠테이션을 지원하는지 확인
-			VkBool32 presentSupport = false;
-			vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
-
-			// 프레젠테이션 큐 패밀리 등록
-			if (presentSupport) {
-				indices.presentFamily = i;
-			}
-
-			// 그래픽 큐 패밀리 찾은 경우 break
-			if (indices.isComplete()) {
-				break;
-			}
-
-			i++;
-		}
-		// 그래픽 큐 패밀리를 못 찾은 경우 값이 없는 채로 반환 됨
-		return indices;
-	}
-
-	/*
-	GLFW 라이브러리에서 Vulkan 인스턴스를 생성할 때 필요한 인스턴스 확장 목록을 반환
-	(디버깅 모드시 메시지 콜백 확장 추가)
-	*/
-	std::vector<const char*> getRequiredExtensions() {
-		// 필요한 확장 목록 가져오기
-		uint32_t glfwExtensionCount = 0;
-		const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-		std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
-
-		// 디버깅 모드이면 VK_EXT_debug_utils 확장 추가 (메세지 콜백 확장)
-		if (enableValidationLayers) {
-			extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-		}
-		
-		return extensions;
-	}
-
-	// 검증 레이어가 사용 가능한 레이어 목록에 있는지 확인
-	bool checkValidationLayerSupport() {
-		// Vulkan 인스턴스에서 사용 가능한 레이어들 목록 생성
-		uint32_t layerCount;
-		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
-		std::vector<VkLayerProperties> availableLayers(layerCount);
-		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
-
-		// 필요한 검증 레이어들이 사용 가능 레이어에 포함 되어있는지 확인
-		for (const char* layerName : validationLayers) {
-			bool layerFound = false;
-			for (const auto& layerProperties : availableLayers) {
-				if (strcmp(layerName, layerProperties.layerName) == 0) {
-					// 포함 확인!
-					layerFound = true;
-					break;
-				}
-			}
-			if (!layerFound) {
-				return false;  // 필요한 레이어가 없다면 false 반환
-			}
-		}
-		return true;  // 모든 레이어가 지원되면 true 반환
 	}
 
 	// shader 파일인 SPIR-V 파일을 바이너리 형태로 읽어오는 함수
@@ -4084,23 +3052,18 @@ private:
 class App {
 public:
 	void run() {
-		// initWindow();
 		window = Window::createWindow();
 		renderer = Renderer::createRenderer(window->getWindow());
-		scene = Scene::createScene(renderer->getDevice(), renderer->getPhysicalDevice(), 
-				renderer->getCommandPool(), renderer->getGraphicsQueue());
+		scene = Scene::createScene();
 		
 		renderer->createUniformBuffers(scene.get());
 		renderer->createDescriptorSets(scene.get());
 
-		// initVulkan();
 		mainLoop();
 		cleanup();
 	}
 
 private:
-	// window
-	// GLFWwindow* window;
 	std::unique_ptr<Window> window;
 	std::unique_ptr<Renderer> renderer;
 	std::unique_ptr<Scene> scene;
