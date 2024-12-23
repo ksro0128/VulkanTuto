@@ -26,4 +26,16 @@ fclean: clean
 
 re: fclean all
 
-.PHONY: all clean fclean re debug release
+shader :
+# shaders 폴더안에 있는 모든 .vert .frag 파일을 glslc로 컴파일 해서 /spv 폴더에 넣는다
+	@mkdir -p ./spvs
+	@for file in ./shaders/*.vert; do \
+		glslc $$file -o ./spvs/$$(basename $$file .vert).vert.spv; \
+	done
+	@for file in ./shaders/*.frag; do \
+		glslc $$file -o ./spvs/$$(basename $$file .frag).frag.spv; \
+	done
+	@echo [SUCCESS] Shaders have been compiled successfully!
+
+
+.PHONY: all clean fclean re debug release shader
