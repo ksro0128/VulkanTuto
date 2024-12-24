@@ -6,7 +6,6 @@
 class DescriptorSetLayout {
 public:
 	static std::unique_ptr<DescriptorSetLayout> createDescriptorSetLayout();
-	static std::unique_ptr<DescriptorSetLayout> createGammaDescriptorSetLayout();
 	~DescriptorSetLayout() {}
 	void cleanup();
 
@@ -16,5 +15,4 @@ private:
 	VkDescriptorSetLayout descriptorSetLayout;
 
 	void initDescriptorSetLayout();
-	void initGammaDescriptorSetLayout();
 };

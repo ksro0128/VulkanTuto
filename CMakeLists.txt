@@ -8,7 +8,7 @@ set(WINDOW_WIDTH 1920)
 set(WINDOW_HEIGHT 1080)
 
 project(${PROJECT_NAME})
-set(SRC src/main.cpp src/main.h 
+set(SRC src/main.cpp
         src/Common.h src/Common.cpp
         src/VulkanUtil.cpp src/VulkanUtil.h
         src/Window.cpp src/Window.h
