@@ -54,7 +54,20 @@ void RenderPass::initRenderPass(VkFormat swapChainImageFormat) {
     colorAttachmentResolve.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     colorAttachmentResolve.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     colorAttachmentResolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachmentResolve.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    colorAttachmentResolve.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+
+    VkAttachmentDescription swapChainAttachment{};
+    swapChainAttachment.format = swapChainImageFormat;
+    swapChainAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    swapChainAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    swapChainAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    swapChainAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    swapChainAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    swapChainAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    swapChainAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+
 
     // subpass가 attachment 설정 어떤 것을 어떻게 참조할지 정의
     // color attachment
@@ -72,13 +85,19 @@ void RenderPass::initRenderPass(VkFormat swapChainImageFormat) {
     colorAttachmentResolveRef.attachment = 2;
     colorAttachmentResolveRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
+    // swap chain attachment
+    VkAttachmentReference swapChainAttachmentRef{};
+    swapChainAttachmentRef.attachment = 3;
+    swapChainAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
     // [subpass 정의]
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1; 										// attachment 설정 개수 등록
     subpass.pColorAttachments = &colorAttachmentRef;						// color attachment 등록
     subpass.pDepthStencilAttachment = &depthAttachmentRef;					// depth attachment 등록
-    subpass.pResolveAttachments = &colorAttachmentResolveRef;				// resolve attachment 등록
+    subpass.pResolveAttachments = &swapChainAttachmentRef;				// resolve attachment 등록
+
 
     // [subpass 종속성 설정]
     // 렌더패스 외부 작업(srcSubpass)과 0번 서브패스(dstSubpass) 간의 동기화 설정.
@@ -95,7 +114,7 @@ void RenderPass::initRenderPass(VkFormat swapChainImageFormat) {
     dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;			// 색상 첨부물 쓰기 권한 | 깊이/스텐실 첨부물 쓰기 권한
 
     // [렌더 패스 정의]
-    std::array<VkAttachmentDescription, 3> attachments = {colorAttachment, depthAttachment, colorAttachmentResolve};
+    std::array<VkAttachmentDescription, 4> attachments = {colorAttachment, depthAttachment, colorAttachmentResolve, swapChainAttachment};
     VkRenderPassCreateInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size()); // attachment 설정 개수 등록

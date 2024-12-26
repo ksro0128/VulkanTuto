@@ -22,4 +22,8 @@ private:
 	VkDeviceMemory depthImageMemory;
 	VkImageView depthImageView;
 	std::vector<VkFramebuffer> framebuffers;
+
+	VkImage resolveImage;
+	VkDeviceMemory resolveImageMemory;
+	VkImageView resolveImageView;
 };

@@ -19,6 +19,10 @@ void FrameBuffers::cleanup() {
     vkDestroyImage(device, depthImage, nullptr);
     vkFreeMemory(device, depthImageMemory, nullptr);
 
+    vkDestroyImageView(device, resolveImageView, nullptr);
+    vkDestroyImage(device, resolveImage, nullptr);
+    vkFreeMemory(device, resolveImageMemory, nullptr);
+
     for (auto framebuffer : framebuffers) {
         vkDestroyFramebuffer(device, framebuffer, nullptr);
     }
@@ -51,12 +55,24 @@ void FrameBuffers::initSwapChainFrameBuffers(SwapChain* swapChain, VkRenderPass 
         depthImage, depthImageMemory);
     depthImageView = VulkanUtil::createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
+    VkFormat resolveFormat = colorFormat;
+    VulkanUtil::createImage(
+        extent.width, extent.height, 1, VK_SAMPLE_COUNT_1_BIT, resolveFormat, 
+        VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        resolveImage, resolveImageMemory);
+
+    resolveImageView = VulkanUtil::createImageView(resolveImage, resolveFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1);
+
+
     framebuffers.resize(swapChainImageViews.size());
 
     for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-        std::array<VkImageView, 3> attachments = {
+        std::array<VkImageView, 4> attachments = {
             colorImageView,
             depthImageView,
+            resolveImageView,
             swapChainImageViews[i]
         };
 

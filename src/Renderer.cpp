@@ -7,6 +7,53 @@ std::unique_ptr<Renderer> Renderer::createRenderer(GLFWwindow* window) {
 }
 
 
+void Renderer::init(GLFWwindow* window) {
+    this->window = window;
+
+    auto &context = VulkanContext::getContext();
+    context.initContext(window);
+    surface = context.getSurface();
+    physicalDevice = context.getPhysicalDevice();
+    device = context.getDevice();
+    graphicsQueue = context.getGraphicsQueue();
+    presentQueue = context.getPresentQueue();
+    commandPool = context.getCommandPool();
+    msaaSamples = context.getMsaaSamples();
+    descriptorPool = context.getDescriptorPool();
+
+    m_swapChain = SwapChain::createSwapChain(window);
+    swapChain = m_swapChain->getSwapChain();
+    swapChainImages = m_swapChain->getSwapChainImages();
+    swapChainImageFormat = m_swapChain->getSwapChainImageFormat();
+    swapChainExtent = m_swapChain->getSwapChainExtent();
+    swapChainImageViews = m_swapChain->getSwapChainImageViews();
+
+    m_syncObjects = SyncObjects::createSyncObjects();
+    imageAvailableSemaphores = m_syncObjects->getImageAvailableSemaphores();
+    renderFinishedSemaphores = m_syncObjects->getRenderFinishedSemaphores();
+    inFlightFences = m_syncObjects->getInFlightFences();
+
+    m_renderPass = RenderPass::createRenderPass(swapChainImageFormat);
+    renderPass = m_renderPass->getRenderPass();
+
+
+    m_descriptorSetLayout = DescriptorSetLayout::createDescriptorSetLayout();
+    descriptorSetLayout = m_descriptorSetLayout->getDescriptorSetLayout();
+
+    m_pipeline = Pipeline::createPipeline(renderPass, descriptorSetLayout);
+    pipelineLayout = m_pipeline->getPipelineLayout();
+    graphicsPipeline = m_pipeline->getPipeline();
+
+
+
+    m_commandBuffers = CommandBuffers::createCommandBuffers();
+    commandBuffers = m_commandBuffers->getCommandBuffers();
+
+    m_swapChainFrameBuffers = FrameBuffers::createSwapChainFrameBuffers(m_swapChain.get(), renderPass);
+    swapChainFramebuffers = m_swapChainFrameBuffers->getFramebuffers();
+}
+
+
 void Renderer::cleanup() {
     m_swapChainFrameBuffers->cleanup();
     m_swapChain->cleanup();
@@ -117,87 +164,6 @@ void Renderer::drawFrame(Scene* scene) {
 
 
 /*
-    변경된 window 크기에 맞게 SwapChain, ImageView, FrameBuffer 재생성
-*/
-void Renderer::recreateSwapChain() {
-    // 현재 프레임버퍼 사이즈 체크
-    int width = 0, height = 0;
-    glfwGetFramebufferSize(window, &width, &height);
-    
-    // 현재 프레임 버퍼 사이즈가 0이면 다음 이벤트 호출까지 대기
-    while (width == 0 || height == 0) {
-        glfwGetFramebufferSize(window, &width, &height);
-        glfwWaitEvents(); // 다음 이벤트 발생 전까지 대기하여 CPU 사용률을 줄이는 함수 
-    }
-
-    // 모든 GPU 작업 종료될 때까지 대기 (사용중인 리소스를 건들지 않기 위해)
-    vkDeviceWaitIdle(device);
-
-    // 스왑 체인 관련 리소스 정리
-    m_swapChainFrameBuffers->cleanup();
-    m_swapChain->recreateSwapChain();
-
-    // 현재 window 크기에 맞게 SwapChain, DepthResource, ImageView, FrameBuffer 재생성
-    swapChain = m_swapChain->getSwapChain();
-    swapChainImages = m_swapChain->getSwapChainImages();
-    swapChainImageFormat = m_swapChain->getSwapChainImageFormat();
-    swapChainExtent = m_swapChain->getSwapChainExtent();
-    swapChainImageViews = m_swapChain->getSwapChainImageViews();
-
-
-    m_swapChainFrameBuffers->initSwapChainFrameBuffers(m_swapChain.get(), renderPass);
-    swapChainFramebuffers = m_swapChainFrameBuffers->getFramebuffers();
-}
-
-
-void Renderer::init(GLFWwindow* window) {
-    this->window = window;
-
-    auto &context = VulkanContext::getContext();
-    context.initContext(window);
-    surface = context.getSurface();
-    physicalDevice = context.getPhysicalDevice();
-    device = context.getDevice();
-    graphicsQueue = context.getGraphicsQueue();
-    presentQueue = context.getPresentQueue();
-    commandPool = context.getCommandPool();
-    msaaSamples = context.getMsaaSamples();
-    descriptorPool = context.getDescriptorPool();
-
-    m_swapChain = SwapChain::createSwapChain(window);
-    swapChain = m_swapChain->getSwapChain();
-    swapChainImages = m_swapChain->getSwapChainImages();
-    swapChainImageFormat = m_swapChain->getSwapChainImageFormat();
-    swapChainExtent = m_swapChain->getSwapChainExtent();
-    swapChainImageViews = m_swapChain->getSwapChainImageViews();
-
-    m_syncObjects = SyncObjects::createSyncObjects();
-    imageAvailableSemaphores = m_syncObjects->getImageAvailableSemaphores();
-    renderFinishedSemaphores = m_syncObjects->getRenderFinishedSemaphores();
-    inFlightFences = m_syncObjects->getInFlightFences();
-
-    m_renderPass = RenderPass::createRenderPass(swapChainImageFormat);
-    renderPass = m_renderPass->getRenderPass();
-
-
-    m_descriptorSetLayout = DescriptorSetLayout::createDescriptorSetLayout();
-    descriptorSetLayout = m_descriptorSetLayout->getDescriptorSetLayout();
-
-    m_pipeline = Pipeline::createPipeline(renderPass, descriptorSetLayout);
-    pipelineLayout = m_pipeline->getPipelineLayout();
-    graphicsPipeline = m_pipeline->getPipeline();
-
-
-
-    m_commandBuffers = CommandBuffers::createCommandBuffers();
-    commandBuffers = m_commandBuffers->getCommandBuffers();
-
-    m_swapChainFrameBuffers = FrameBuffers::createSwapChainFrameBuffers(m_swapChain.get(), renderPass);
-    swapChainFramebuffers = m_swapChainFrameBuffers->getFramebuffers();
-}
-
-
-/*
     [커맨드 버퍼에 작업 기록]
     1. 커맨드 버퍼 기록 시작
     2. 렌더패스 시작하는 명령 기록
@@ -221,7 +187,6 @@ void Renderer::recordCommandBuffer(Scene* scene, VkCommandBuffer commandBuffer, 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     renderPassInfo.renderPass = renderPass;								// 렌더 패스 등록
-    // renderPassInfo.renderPass = gammaRenderPass;								// 렌더 패스 등록
     renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];		// 프레임 버퍼 등록
     renderPassInfo.renderArea.offset = {0, 0};							// 렌더링 시작 좌표 등록
     renderPassInfo.renderArea.extent = swapChainExtent;					// 렌더링 width, height 등록 (보통 프레임버퍼, 스왑체인의 크기와 같게 설정)
@@ -291,3 +256,36 @@ void Renderer::recordCommandBuffer(Scene* scene, VkCommandBuffer commandBuffer, 
     }
 }
 
+
+/*
+    변경된 window 크기에 맞게 SwapChain, ImageView, FrameBuffer 재생성
+*/
+void Renderer::recreateSwapChain() {
+    // 현재 프레임버퍼 사이즈 체크
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    
+    // 현재 프레임 버퍼 사이즈가 0이면 다음 이벤트 호출까지 대기
+    while (width == 0 || height == 0) {
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents(); // 다음 이벤트 발생 전까지 대기하여 CPU 사용률을 줄이는 함수 
+    }
+
+    // 모든 GPU 작업 종료될 때까지 대기 (사용중인 리소스를 건들지 않기 위해)
+    vkDeviceWaitIdle(device);
+
+    // 스왑 체인 관련 리소스 정리
+    m_swapChainFrameBuffers->cleanup();
+    m_swapChain->recreateSwapChain();
+
+    // 현재 window 크기에 맞게 SwapChain, DepthResource, ImageView, FrameBuffer 재생성
+    swapChain = m_swapChain->getSwapChain();
+    swapChainImages = m_swapChain->getSwapChainImages();
+    swapChainImageFormat = m_swapChain->getSwapChainImageFormat();
+    swapChainExtent = m_swapChain->getSwapChainExtent();
+    swapChainImageViews = m_swapChain->getSwapChainImageViews();
+
+
+    m_swapChainFrameBuffers->initSwapChainFrameBuffers(m_swapChain.get(), renderPass);
+    swapChainFramebuffers = m_swapChainFrameBuffers->getFramebuffers();
+}
